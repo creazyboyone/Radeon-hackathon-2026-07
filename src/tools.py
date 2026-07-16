@@ -484,53 +484,64 @@ _DAEMON_MAP = {
 
 @tool("restart_service")
 def _restart_service(service="", reason="", node=""):
-    """通过 SSH 执行 daemon 脚本重启服务"""
+    """通过 CM API 启动停止的服务角色
+
+    CM API commands/start 只启动 STOPPED 的角色, 不影响已运行的。
+    """
     svc_info = SERVICE_MAP.get(service)
     if not svc_info:
         return {"error": f"未知服务: {service}",
                 "available": list(SERVICE_MAP.keys())}
 
-    if node:
-        target_nodes = [node]
-    else:
-        target_nodes = svc_info.get("nodes", [])
-
     cm_svc = svc_info["cm_service"]
-    run_user = svc_info["run_user"]
-    role_lower = svc_info["cm_role_type"].lower()
-    daemon = _DAEMON_MAP.get(cm_svc, {})
-    script = daemon.get("script", "")
+    target_type = svc_info["cm_role_type"]
+    target_nodes = _resolve_node(svc_info, node)
+    target_hostnames = {_node_hostname(n) for n in target_nodes}
 
-    results = []
-    for n in target_nodes:
-        ip = _node_ip(n)
-        hostname = _node_hostname(n)
-
-        if not script:
-            results.append({
-                "node": hostname,
-                "result": "unsupported",
-                "message": f"{service} 暂不支持 SSH 自动重启, 请通过 CM 手动操作",
-            })
+    # 先检查当前角色状态
+    role_data = cm_get(f"/clusters/{CM_CLUSTER}/services/{cm_svc}/roles")
+    stopped_roles = []
+    running_roles = []
+    for role in role_data.get("items", []):
+        if role.get("type") != target_type:
             continue
+        hostname = _resolve_hostname(role.get("hostRef", {}))
+        if target_hostnames and hostname not in target_hostnames:
+            continue
+        state = role.get("roleState", "")
+        if state in ("STOPPED", "DOWN", "UNKNOWN"):
+            stopped_roles.append({"name": role.get("name", ""),
+                                  "node": hostname, "state": state})
+        else:
+            running_roles.append({"name": role.get("name", ""),
+                                  "node": hostname, "state": state})
 
-        cmd = f"sudo -u {run_user} {script} start {role_lower}"
-        stdout, stderr, rc = ssh_exec(ip, cmd, timeout=30)
-        results.append({
-            "node": hostname,
-            "command": cmd,
-            "returncode": rc,
-            "stdout": stdout[:200] if stdout else "",
-            "stderr": stderr[:200] if stderr else "",
-            "result": "started" if rc == 0 else "failed",
-        })
+    # 如果没有停止的角色, 直接返回
+    if not stopped_roles:
+        return {
+            "service": service,
+            "reason": reason,
+            "risk_level": "high" if svc_info.get("core") else "medium",
+            "result": "already_running",
+            "message": f"所有 {service} 角色已在运行, 无需启动",
+            "running": running_roles,
+        }
+
+    # 调用 CM API commands/start 启动停止的角色
+    cmd_data = cm_post(
+        f"/clusters/{CM_CLUSTER}/services/{cm_svc}/commands/start"
+    )
 
     return {
         "service": service,
         "reason": reason,
         "risk_level": "high" if svc_info.get("core") else "medium",
-        "results": results,
-        "hint": "启动后请用 get_service_status 验证恢复状态",
+        "command_id": cmd_data.get("id", ""),
+        "command_name": cmd_data.get("name", ""),
+        "stopped_before": stopped_roles,
+        "already_running": running_roles,
+        "result": "starting" if cmd_data.get("id") else "failed",
+        "hint": "CM 正在启动停止的角色, 请等待几秒后用 get_service_status 验证恢复",
     }
 
 

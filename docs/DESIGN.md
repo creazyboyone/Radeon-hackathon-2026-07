@@ -778,7 +778,7 @@ runbooks(
 | 审批超时时长 | 10min（暂定） | 可调 |
 | 巡检周期 | 5min（暂定） | 可调 |
 | `-t` 线程调优 | 待调 | EPYC 9334 共 128 线程，现 16，可试 32 |
-| restart_service 启动失败 | ⚠️ 已知问题 | CDH 环境 hadoop-daemon.sh 缺 JAVA_HOME，后续对接 MCP/skill 或 CM API commands/restart |
+| restart_service 启动失败 | ✅ 已修复 | 改用 CM API commands/start 启动停止的角色, 通过 CM 管道管理, 不依赖 JAVA_HOME |
 | 集群环境 | 临时 CDH → docker | 当前用 CDH 6.3.2 三节点（176/177/178），后续切 docker-compose Apache Hadoop + Prometheus + Grafana |
 | CM API 单角色操作 | ❌ 不支持 | CM API v30 仅支持 commands/restart（整个服务），不支持单角色 stop/start/restart |
 
