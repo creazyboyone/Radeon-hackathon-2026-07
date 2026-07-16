@@ -1,4 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
+import { Table, Tag, Button, Space, Card, Empty, Popconfirm, message } from 'antd'
+import { CheckOutlined, CloseOutlined, ReloadOutlined } from '@ant-design/icons'
 
 interface Approval {
   id: string
@@ -12,6 +14,13 @@ interface Approval {
   ts: number
 }
 
+const RISK_COLORS: Record<string, string> = {
+  high: 'red',
+  medium: 'orange',
+  low: 'green',
+  destructive: 'volcano',
+}
+
 function ApprovalCenter() {
   const [approvals, setApprovals] = useState<Approval[]>([])
   const [loading, setLoading] = useState(false)
@@ -22,16 +31,14 @@ function ApprovalCenter() {
       const res = await fetch('/api/approvals')
       const data = await res.json()
       setApprovals(data)
-    } catch (e) {
-      console.error('fetch approvals failed:', e)
-    }
+    } catch {}
     setLoading(false)
   }, [])
 
   useEffect(() => {
     fetchApprovals()
-    const interval = setInterval(fetchApprovals, 5000)
-    return () => clearInterval(interval)
+    const t = setInterval(fetchApprovals, 5000)
+    return () => clearInterval(t)
   }, [fetchApprovals])
 
   const decide = async (id: string, status: string) => {
@@ -40,76 +47,90 @@ function ApprovalCenter() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status, decided_by: 'web-user' }),
     })
+    message.success(`${status === 'approved' ? 'Approved' : 'Rejected'}: ${id}`)
     fetchApprovals()
   }
 
-  const pending = approvals.filter((a) => a.status === 'pending')
-  const decided = approvals.filter((a) => a.status !== 'pending')
-
-  const riskColor = (r: string) =>
-    r === 'high' ? '#ef4444' : r === 'medium' ? '#f59e0b' : '#22c55e'
-
-  const renderItem = (a: Approval) => (
-    <div key={a.id} className="approval-item">
-      <div className="approval-header">
-        <span className="risk-badge" style={{ background: riskColor(a.risk_level) }}>
-          {a.risk_level.toUpperCase()}
+  const columns = [
+    {
+      title: 'Risk',
+      dataIndex: 'risk_level',
+      key: 'risk',
+      width: 80,
+      render: (v: string) => <Tag color={RISK_COLORS[v] || 'default'}>{v?.toUpperCase()}</Tag>,
+    },
+    { title: 'Tool', dataIndex: 'tool_name', key: 'tool', width: 150 },
+    {
+      title: 'Args',
+      key: 'args',
+      render: (_: any, r: Approval) => (
+        <span style={{ fontSize: 12, fontFamily: 'monospace' }}>
+          {JSON.stringify(r.args)}
         </span>
-        <span className="tool-name">{a.tool_name}</span>
-        <span className="approval-status">{a.status}</span>
-      </div>
-      <div className="approval-args">
-        <strong>Args:</strong> {JSON.stringify(a.args)}
-      </div>
-      {a.dry_run?.message && (
-        <div className="approval-dryrun">
-          <strong>Dry-run:</strong> {a.dry_run.message}
-        </div>
-      )}
-      {a.status === 'pending' && (
-        <div className="approval-actions">
-          <button className="btn-approve" onClick={() => decide(a.id, 'approved')}>
-            Approve
-          </button>
-          <button className="btn-reject" onClick={() => decide(a.id, 'rejected')}>
-            Reject
-          </button>
-        </div>
-      )}
-      {a.decided_by && (
-        <div className="approval-decided">
-          by {a.decided_by}
-        </div>
-      )}
-    </div>
-  )
+      ),
+    },
+    {
+      title: 'Dry-run',
+      key: 'dry_run',
+      width: 200,
+      render: (_: any, r: Approval) => r.dry_run?.message || '-',
+    },
+    {
+      title: 'Status',
+      dataIndex: 'status',
+      key: 'status',
+      width: 100,
+      render: (v: string) => (
+        <Tag color={v === 'approved' ? 'success' : v === 'rejected' ? 'error' : 'processing'}>
+          {v}
+        </Tag>
+      ),
+    },
+    {
+      title: 'By',
+      dataIndex: 'decided_by',
+      key: 'by',
+      width: 140,
+      render: (v: string) => v || '-',
+    },
+    {
+      title: 'Action',
+      key: 'action',
+      width: 160,
+      render: (_: any, r: Approval) =>
+        r.status === 'pending' ? (
+          <Space>
+            <Button type="primary" size="small" icon={<CheckOutlined />}
+              onClick={() => decide(r.id, 'approved')}>Approve</Button>
+            <Button danger size="small" icon={<CloseOutlined />}
+              onClick={() => decide(r.id, 'rejected')}>Reject</Button>
+          </Space>
+        ) : null,
+    },
+  ]
+
+  const pending = approvals.filter(a => a.status === 'pending')
 
   return (
-    <div className="approval-center">
-      <div className="status-bar">
-        <span>{loading ? 'Loading...' : 'Loaded'}</span>
-        <span className="event-count">{pending.length} pending / {decided.length} decided</span>
-        <button className="clear-btn" onClick={fetchApprovals}>Refresh</button>
-      </div>
-      {pending.length > 0 && (
-        <>
-          <h3>Pending ({pending.length})</h3>
-          <div className="approval-list">
-            {pending.map(renderItem)}
-          </div>
-        </>
-      )}
-      {decided.length > 0 && (
-        <>
-          <h3>History ({decided.length})</h3>
-          <div className="approval-list">
-            {decided.slice(0, 20).map(renderItem)}
-          </div>
-        </>
-      )}
-      {approvals.length === 0 && (
-        <div className="empty">No approvals yet</div>
-      )}
+    <div style={{ maxWidth: 1200 }}>
+      <Card
+        size="small"
+        title={`Approval Center (${pending.length} pending / ${approvals.length} total)`}
+        extra={<Button icon={<ReloadOutlined />} onClick={fetchApprovals} size="small">Refresh</Button>}
+      >
+        {approvals.length === 0 && !loading ? (
+          <Empty description="No approvals yet" />
+        ) : (
+          <Table
+            dataSource={approvals}
+            columns={columns}
+            rowKey="id"
+            loading={loading}
+            size="small"
+            pagination={{ pageSize: 20, size: 'small' }}
+          />
+        )}
+      </Card>
     </div>
   )
 }

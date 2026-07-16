@@ -1,37 +1,36 @@
 import { useState } from 'react'
+import { ConfigProvider, theme, Layout, Tabs } from 'antd'
 import AgentActivity from './components/AgentActivity'
 import ApprovalCenter from './components/ApprovalCenter'
-import './App.css'
 
-type Tab = 'agent' | 'approval'
+const { Header, Content } = Layout
 
 function App() {
-  const [tab, setTab] = useState<Tab>('agent')
+  const [tab, setTab] = useState('agent')
 
   return (
-    <div className="app">
-      <header className="header">
-        <h1>AIOps Agent Console</h1>
-        <nav className="tabs">
-          <button
-            className={tab === 'agent' ? 'tab active' : 'tab'}
-            onClick={() => setTab('agent')}
-          >
-            Agent Activity
-          </button>
-          <button
-            className={tab === 'approval' ? 'tab active' : 'tab'}
-            onClick={() => setTab('approval')}
-          >
-            Approval Center
-          </button>
-        </nav>
-      </header>
-      <main className="content">
-        {tab === 'agent' && <AgentActivity />}
-        {tab === 'approval' && <ApprovalCenter />}
-      </main>
-    </div>
+    <ConfigProvider theme={{ algorithm: theme.darkAlgorithm }}>
+      <Layout style={{ minHeight: '100vh' }}>
+        <Header style={{ display: 'flex', alignItems: 'center' }}>
+          <h2 style={{ color: '#38bdf8', margin: 0, marginRight: 32 }}>
+            AIOps Agent Console
+          </h2>
+          <Tabs
+            activeKey={tab}
+            onChange={setTab}
+            items={[
+              { key: 'agent', label: 'Agent Activity' },
+              { key: 'approval', label: 'Approval Center' },
+            ]}
+            style={{ flex: 1 }}
+          />
+        </Header>
+        <Content style={{ padding: 24 }}>
+          {tab === 'agent' && <AgentActivity />}
+          {tab === 'approval' && <ApprovalCenter />}
+        </Content>
+      </Layout>
+    </ConfigProvider>
   )
 }
 

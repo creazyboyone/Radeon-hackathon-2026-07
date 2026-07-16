@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { Tree, Timeline, Card, Tag, Typography, Badge, Spin, Button, Collapse } from 'antd'
+import {
+  ApiOutlined, BulbOutlined, ToolOutlined, CheckCircleOutlined,
+  RobotOutlined, ThunderboltOutlined
+} from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-// ---- 类型 ----
+const { Text, Paragraph } = Typography
+
 interface Session {
   id: string
   parent_id: string | null
@@ -27,20 +33,17 @@ interface HistEvent {
   ts: number
 }
 
-const KIND_LABELS: Record<string, string> = {
-  reasoning: 'THINKING', assistant: 'RESPONSE',
-  tool_call: 'TOOL CALL', tool_result: 'RESULT',
-  user_input: 'INPUT', final_answer: 'DONE',
+const KIND_CONFIG: Record<string, { label: string; color: string; icon: any }> = {
+  reasoning:    { label: 'THINKING',  color: 'purple',  icon: <BulbOutlined /> },
+  assistant:    { label: 'RESPONSE',  color: 'blue',    icon: <RobotOutlined /> },
+  tool_call:    { label: 'TOOL CALL',  color: 'orange',  icon: <ToolOutlined /> },
+  tool_result:  { label: 'RESULT',     color: 'green',   icon: <ApiOutlined /> },
+  user_input:   { label: 'INPUT',      color: 'default', icon: <ThunderboltOutlined /> },
+  final_answer: { label: 'DONE',       color: 'success', icon: <CheckCircleOutlined /> },
 }
 
-const KIND_COLORS: Record<string, string> = {
-  reasoning: '#6366f1', assistant: '#0ea5e9',
-  tool_call: '#f59e0b', tool_result: '#10b981',
-  user_input: '#6b7280', final_answer: '#22c55e',
-}
-
-// 从 tool_call args 中提取关键信息
 function extractCallInfo(name: string, args: any): string {
+  if (!args) return ''
   const parts: string[] = []
   if (args.service) parts.push(args.service)
   if (args.node) parts.push(args.node)
@@ -48,26 +51,22 @@ function extractCallInfo(name: string, args: any): string {
   if (args.filter) parts.push(`filter=${args.filter}`)
   if (args.query) parts.push(`"${args.query}"`)
   if (args.action) parts.push(args.action)
-  if (args.reason) parts.push(`(${args.reason.slice(0, 60)})`)
+  if (args.reason) parts.push(`(${args.reason.slice(0, 80)})`)
   return parts.join(' ')
 }
 
-// 从 tool_result 中提取关键摘要
 function extractResultSummary(name: string, result: any): string {
   if (!result || typeof result !== 'object') return ''
-  if (result.error) return `ERROR: ${result.error}`
-  if (result.overall_health) return `health=${result.overall_health} roles=${result.role_count || 0}`
-  if (result.count !== undefined) return `count=${result.count}`
-  if (result.total_errors !== undefined) return `errors=${result.total_errors} nodes=${result.nodes_checked || 0}`
+  if (result.error) return `Error: ${result.error}`
+  if (result.overall_health) return `health=${result.overall_health}, roles=${result.role_count ?? 0}`
+  if (result.count !== undefined) return `alerts=${result.count}`
+  if (result.total_errors !== undefined) return `errors=${result.total_errors}, nodes=${result.nodes_checked ?? 0}`
   if (result.matches !== undefined) return `matches=${result.matches}`
   if (result.result) return `result=${result.result}`
-  if (result.command_id) return `cmd_id=${result.command_id} result=${result.result || '?'}`
-  if (result.output) return (result.output as string).slice(0, 80).replace(/\n/g, ' ')
-  if (result.nodes) {
-    const keys = Object.keys(result.nodes)
-    return `nodes=${keys.join(',')}`
-  }
-  return JSON.stringify(result).slice(0, 80)
+  if (result.command_id) return `cmd=${result.command_id}, result=${result.result ?? '?'}`
+  if (result.output) return (result.output as string).slice(0, 100).replace(/\n/g, ' ')
+  if (result.nodes) return `nodes=${Object.keys(result.nodes).join(',')}`
+  return JSON.stringify(result).slice(0, 100)
 }
 
 function AgentActivity() {
@@ -75,45 +74,39 @@ function AgentActivity() {
   const [selectedSid, setSelectedSid] = useState<string>('')
   const [events, setEvents] = useState<(HistEvent | AgentEvent)[]>([])
   const [connected, setConnected] = useState(false)
-  const [expanded, setExpanded] = useState<Set<number>>(new Set())
+  const [loading, setLoading] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // 加载 session 列表
   const fetchSessions = useCallback(async () => {
     try {
       const res = await fetch('/api/sessions')
       const data: Session[] = await res.json()
       setSessions(data)
-      // 默认选中最新的 session
-      if (data.length > 0 && !selectedSid) {
-        setSelectedSid(data[0].id)
-      }
+      if (data.length > 0 && !selectedSid) setSelectedSid(data[0].id)
     } catch {}
   }, [selectedSid])
 
-  // 加载选中 session 的历史事件
   const fetchEvents = useCallback(async (sid: string) => {
+    setLoading(true)
     try {
       const res = await fetch(`/api/sessions/${sid}/events`)
       const data: HistEvent[] = await res.json()
       setEvents(data.map(e => ({ ...e, session_id: sid, type: 'agent_event' })))
-    } catch {
-      setEvents([])
-    }
+    } catch { setEvents([]) }
+    setLoading(false)
   }, [])
 
   useEffect(() => {
     fetchSessions()
-    const interval = setInterval(fetchSessions, 5000)
-    return () => clearInterval(interval)
+    const t = setInterval(fetchSessions, 5000)
+    return () => clearInterval(t)
   }, [fetchSessions])
 
   useEffect(() => {
     if (selectedSid) fetchEvents(selectedSid)
   }, [selectedSid, fetchEvents])
 
-  // WebSocket 增量推送
   useEffect(() => {
     const ws = new WebSocket(`ws://${location.host}/ws`)
     wsRef.current = ws
@@ -122,17 +115,11 @@ function AgentActivity() {
     ws.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data)
-        if (data.type === 'ping') return
-        if (data.type === 'agent_event') {
-          // 只追加到当前选中的 session
-          if (data.session_id === selectedSid) {
-            setEvents(prev => [...prev.slice(-200), data])
-          }
-          // 新 session 创建时刷新列表
-          if (data.kind === 'user_input') {
-            fetchSessions()
-          }
+        if (data.type !== 'agent_event') return
+        if (data.session_id === selectedSid) {
+          setEvents(prev => [...prev.slice(-300), data])
         }
+        if (data.kind === 'user_input') fetchSessions()
       } catch {}
     }
     return () => ws.close()
@@ -142,117 +129,125 @@ function AgentActivity() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [events])
 
-  const toggleExpand = (idx: number) => {
-    setExpanded(prev => {
-      const next = new Set(prev)
-      if (next.has(idx)) next.delete(idx)
-      else next.add(idx)
-      return next
-    })
-  }
-
-  // 构建 session 树
+  // 构建 Tree 数据
   const roots = sessions.filter(s => !s.parent_id)
-  const childrenOf = (pid: string) => sessions.filter(s => s.parent_id === pid)
-
-  const renderSessionTree = (s: Session, depth: number = 0): any => {
-    const children = childrenOf(s.id)
-    const isSelected = s.id === selectedSid
-    const isRunning = !s.ended_at
-    return (
-      <div key={s.id} className="session-node" style={{ marginLeft: depth * 16 }}>
-        <div
-          className={`session-item ${isSelected ? 'selected' : ''}`}
-          onClick={() => setSelectedSid(s.id)}
-        >
-          <span className={`session-type type-${s.type}`}>
-            {s.type === 'master' ? 'M' : s.type === 'auto' ? 'A' : 'F'}
-          </span>
-          <span className="session-id">{s.id.slice(0, 8)}</span>
-          {isRunning && <span className="session-live">LIVE</span>}
-          <span className="session-status">{s.status}</span>
-        </div>
-        {children.map(c => renderSessionTree(c, depth + 1))}
-      </div>
-    )
+  const buildTreeData = (s: Session): any => {
+    const children = sessions.filter(c => c.parent_id === s.id)
+    const typeLabel = s.type === 'master' ? 'Master' : s.type === 'auto' ? 'Auto' : 'Fix'
+    const typeColor = s.type === 'master' ? 'processing' : s.type === 'auto' ? 'blue' : 'warning'
+    return {
+      key: s.id,
+      title: (
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Tag color={typeColor} style={{ margin: 0, fontSize: 11 }}>{typeLabel}</Tag>
+          <Text code style={{ fontSize: 11 }}>{s.id.slice(0, 8)}</Text>
+          {!s.ended_at && <Badge status="processing" />}
+        </span>
+      ),
+      children: children.map(buildTreeData),
+    }
   }
+  const treeData = roots.map(buildTreeData)
 
   return (
-    <div className="agent-activity">
-      <div className="agent-layout">
-        {/* 左侧: Session 树 */}
-        <div className="session-panel">
-          <div className="status-bar">
-            <span className={`dot ${connected ? 'online' : 'offline'}`} />
-            <span>{connected ? 'Live' : 'Off'}</span>
-          </div>
-          <div className="session-tree">
-            {sessions.length === 0 && <div className="empty">No sessions</div>}
-            {roots.map(r => renderSessionTree(r))}
-          </div>
-        </div>
+    <div style={{ display: 'flex', gap: 16, height: 'calc(100vh - 140px)' }}>
+      {/* 左侧: Session 树 */}
+      <Card
+        size="small"
+        style={{ width: 280, flexShrink: 0, overflow: 'auto' }}
+        title={
+          <span>
+            <Badge status={connected ? 'success' : 'default'} text={connected ? 'Live' : 'Offline'} />
+          </span>
+        }
+      >
+        <Tree
+          treeData={treeData}
+          selectedKeys={selectedSid ? [selectedSid] : []}
+          onSelect={(keys) => keys[0] && setSelectedSid(keys[0] as string)}
+          defaultExpandAll
+          showLine
+        />
+      </Card>
 
-        {/* 右侧: 事件列表 */}
-        <div className="event-panel">
-          <div className="status-bar">
-            <span>{selectedSid ? `Session ${selectedSid.slice(0, 8)}` : 'No session selected'}</span>
-            <span className="event-count">{events.length} events</span>
-            {events.length > 0 && (
-              <button className="clear-btn" onClick={() => setEvents([])}>Clear</button>
-            )}
-          </div>
-          <div className="event-list">
-            {events.length === 0 && <div className="empty">No events</div>}
-            {events.map((evt: any, i) => {
-              const kind = evt.kind
-              const label = KIND_LABELS[kind] || kind
-              const color = KIND_COLORS[kind] || '#6b7280'
+      {/* 右侧: 事件 Timeline */}
+      <Card
+        size="small"
+        style={{ flex: 1, overflow: 'auto' }}
+        title={
+          <span>
+            {selectedSid
+              ? `Session ${selectedSid.slice(0, 8)} (${events.length} events)`
+              : 'Select a session'}
+          </span>
+        }
+      >
+        {loading ? (
+          <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>
+        ) : events.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 40, color: '#888' }}>No events</div>
+        ) : (
+          <Timeline
+            items={events.map((evt: any, i) => {
+              const cfg = KIND_CONFIG[evt.kind] || { label: evt.kind, color: 'gray', icon: null }
               const content = evt.content || {}
-              const isExpanded = expanded.has(i)
-              const isMarkdown = kind === 'reasoning' || kind === 'assistant' || kind === 'final_answer' || kind === 'user_input'
-              const isTool = kind === 'tool_call' || kind === 'tool_result'
+              const isMarkdown = ['reasoning', 'assistant', 'final_answer', 'user_input'].includes(evt.kind)
+              const isTool = ['tool_call', 'tool_result'].includes(evt.kind)
 
               let summary = ''
-              if (kind === 'tool_call') {
+              if (evt.kind === 'tool_call') {
                 summary = `${content.name}(${extractCallInfo(content.name, content.args || {})})`
-              } else if (kind === 'tool_result') {
-                const r = content.result || content
-                summary = extractResultSummary(content.name || '', r)
+              } else if (evt.kind === 'tool_result') {
+                summary = extractResultSummary(content.name || '', content.result || content)
               } else if (content.text) {
                 summary = content.text
               } else if (content.tool_calls?.length) {
                 summary = content.tool_calls.map((tc: any) => tc.name).join(', ')
               }
 
-              return (
-                <div key={i} className={`event-card ${isMarkdown ? 'md-card' : ''}`}>
-                  <div className="event-header" onClick={() => isTool && toggleExpand(i)}>
-                    <span className="event-tag" style={{ background: color }}>{label}</span>
-                    {isTool && <span className="expand-hint">{isExpanded ? '[-]' : '[+]'}</span>}
-                    {!isMarkdown && !isTool && <span className="event-summary">{summary}</span>}
-                  </div>
-                  <div className="event-body">
-                    {isMarkdown && (
-                      <div className="markdown-body">
+              return {
+                key: i,
+                color: cfg.color as any,
+                dot: cfg.icon,
+                children: (
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                      <Tag color={cfg.color}>{cfg.label}</Tag>
+                    </div>
+                    {isMarkdown ? (
+                      <div className="markdown-body" style={{ fontSize: 13, lineHeight: 1.6 }}>
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{summary || ''}</ReactMarkdown>
                       </div>
-                    )}
-                    {isTool && isExpanded && (
-                      <pre className="event-json">
-                        {JSON.stringify(content, null, 2)}
-                      </pre>
-                    )}
-                    {isTool && !isExpanded && (
-                      <span className="event-summary">{summary}</span>
+                    ) : isTool ? (
+                      <div>
+                        <Paragraph style={{ margin: 0 }}>
+                          <Text style={{ fontSize: 13 }}>{summary}</Text>
+                        </Paragraph>
+                        <Collapse
+                          ghost
+                          size="small"
+                          items={[{
+                            key: 'json',
+                            label: 'JSON',
+                            children: (
+                              <pre style={{ fontSize: 11, color: '#888', overflow: 'auto', maxHeight: 300, background: '#0d1117', padding: 10, borderRadius: 6 }}>
+                                {JSON.stringify(content, null, 2)}
+                              </pre>
+                            )
+                          }]}
+                        />
+                      </div>
+                    ) : (
+                      <Text style={{ fontSize: 13 }}>{summary}</Text>
                     )}
                   </div>
-                </div>
-              )
+                ),
+              }
             })}
-            <div ref={bottomRef} />
-          </div>
-        </div>
-      </div>
+          />
+        )}
+        <div ref={bottomRef} />
+      </Card>
     </div>
   )
 }
