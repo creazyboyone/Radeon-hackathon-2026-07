@@ -9,6 +9,7 @@ class LLMClient:
     def __init__(self, base_url: str, api_key: str, model: str):
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self._api_key = api_key
         self.session = requests.Session()
         self.session.headers.update({
             "Authorization": f"Bearer {api_key}",
@@ -82,9 +83,14 @@ class LLMClient:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
 
-        resp = self.session.post(
+        # 不复用 Session 连接池, 每次独立连接, 避免 stream response 未关闭导致连接池耗尽
+        resp = requests.post(
             f"{self.base_url}/chat/completions",
             json=payload,
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
             timeout=(10, 120),
             stream=True,
         )
@@ -94,44 +100,47 @@ class LLMClient:
         reasoning_buf = ""
         tool_calls_buf = []
 
-        for line in resp.iter_lines():
-            if not line:
-                continue
-            line = line.decode("utf-8")
-            if line.startswith("data: "):
-                line = line[6:]
-            if line.strip() == "[DONE]":
-                break
-            try:
-                chunk = json.loads(line)
-                delta = chunk["choices"][0].get("delta", {})
+        try:
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                line = line.decode("utf-8")
+                if line.startswith("data: "):
+                    line = line[6:]
+                if line.strip() == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(line)
+                    delta = chunk["choices"][0].get("delta", {})
 
-                c = delta.get("content", "")
-                if c:
-                    content_buf += c
-                    if on_chunk:
-                        on_chunk({"type": "content", "text": c})
+                    c = delta.get("content", "")
+                    if c:
+                        content_buf += c
+                        if on_chunk:
+                            on_chunk({"type": "content", "text": c})
 
-                r = delta.get("reasoning_content", "")
-                if r:
-                    reasoning_buf += r
-                    if on_chunk:
-                        on_chunk({"type": "reasoning", "text": r})
+                    r = delta.get("reasoning_content", "")
+                    if r:
+                        reasoning_buf += r
+                        if on_chunk:
+                            on_chunk({"type": "reasoning", "text": r})
 
-                if delta.get("tool_calls"):
-                    for tc in delta["tool_calls"]:
-                        idx = tc.get("index", 0)
-                        while len(tool_calls_buf) <= idx:
-                            tool_calls_buf.append({"id": "", "name": "", "arguments": ""})
-                        if tc.get("id"):
-                            tool_calls_buf[idx]["id"] = tc["id"]
-                        fn = tc.get("function", {})
-                        if fn.get("name"):
-                            tool_calls_buf[idx]["name"] = fn["name"]
-                        if fn.get("arguments"):
-                            tool_calls_buf[idx]["arguments"] += fn["arguments"]
-            except Exception:
-                continue
+                    if delta.get("tool_calls"):
+                        for tc in delta["tool_calls"]:
+                            idx = tc.get("index", 0)
+                            while len(tool_calls_buf) <= idx:
+                                tool_calls_buf.append({"id": "", "name": "", "arguments": ""})
+                            if tc.get("id"):
+                                tool_calls_buf[idx]["id"] = tc["id"]
+                            fn = tc.get("function", {})
+                            if fn.get("name"):
+                                tool_calls_buf[idx]["name"] = fn["name"]
+                            if fn.get("arguments"):
+                                tool_calls_buf[idx]["arguments"] += fn["arguments"]
+                except Exception:
+                    continue
+        finally:
+            resp.close()  # 确保流式连接被释放, 防止连接池卡死
 
         # 解析 tool_calls
         parsed_tool_calls = []

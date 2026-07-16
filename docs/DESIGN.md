@@ -110,9 +110,9 @@
 - 仅跑 llama-server，端口 8080，API key `fengfeng123`
 - 存储：`/workspace` 持久卷 20G（放模型 + bootstrap.sh）；overlay 根非持久
 - llama-server 二进制：`/opt/llama.cpp/llama-server`（符号链接 -> `build/bin/llama-server`）
-- 连接：SSH `root@36.150.116.220 -p 30463`（安全组已放行）
+- 连接：SSH `root@<REMOTE_IP> -p <PORT>`（安全组已放行）
 - **本地访问推理 API：SSH 隧道 `http://127.0.0.1:18080` -> 远程 8080**（已验证 tool-calling 端到端通）
-- 隧道命令：`ssh -o ServerAliveInterval=30 -L 18080:127.0.0.1:8080 -p 30463 root@36.150.116.220 -N`
+- 隧道命令：`ssh -o ServerAliveInterval=30 -L 18080:127.0.0.1:8080 -p <PORT> root@<REMOTE_IP> -N`
 - 注：远程 jupyter-lab 为 PID 1（端口 8888），不可 kill（会重启容器）
 
 **兜底环境（本地 7900XTX，远程不可用时退回）**
@@ -757,11 +757,22 @@ runbooks(
 - [ ] write_runbook 回写 + 人工审核
 
 ### M6 - Web 控制台 ✅ 已完成
-- [x] 后端 FastAPI: REST API (/api/sessions /api/approvals /api/audit) + WebSocket (/ws 事件推送)
-- [x] 事件总线: agent ReAct 循环事件 (reasoning/tool_call/tool_result) 实时推送到 WebSocket
-- [x] 前端 React + Vite: Agent 活动台 (实时 ReAct 循环) + 审批中心 (通过/拒绝)
+- [x] 后端 FastAPI: REST API (/api/sessions /api/approvals /api/audit /api/cluster/snapshot) + WebSocket (/ws 事件推送)
+- [x] 事件总线 EventBus: 线程安全 queue.Queue 桥接 agent 同步代码和 WebSocket 异步推送
+- [x] 前端 React + Vite + Ant Design (暗色主题):
+  - 登录页 (localStorage token)
+  - Sider 可收缩菜单 + Header (用户信息/通知 Badge/主题切换) + 面包屑
+  - Agent 活动台: Session 树 (master→auto/fix, 时间显示, LIVE Badge) + Timeline 事件流
+  - 事件渲染: Markdown (react-markdown + remark-gfm 表格) + 折叠 JSON (Collapse)
+  - 审批中心: Table (pending/decided 分组, 风险标签, 通过/拒绝按钮)
+  - 集群状态卡: 选中 master session 显示 Statistic + Descriptions 服务状态
+- [x] 流式输出: llm_client.chat_stream (SSE) + agent on_chunk 回调逐 token 推送到 WebSocket
+  - 前端实时拼接: stream_reasoning/stream_content 增量追加, 完整事件替换流式内容
+  - 首字延迟正常 (推理模型思考阶段)
+- [x] 智能滚动: scrollRef + atBottomRef, 用户在底部才自动滚动, 向上查看历史不打断
+- [x] 全中文 UI
 - [ ] 集群状态面板 (嵌 Grafana, 待 docker 环境搭建后接入)
-- [ ] 前端 admin 模板美化
+- [ ] 前端 admin 模板进一步美化
 
 ### M7 - 演示与提交
 - [ ] 多故障剧本跑通
