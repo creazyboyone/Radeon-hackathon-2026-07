@@ -2,9 +2,10 @@ import json
 import logging
 
 from .llm_client import LLMClient
-from .tools import (TOOL_RISK, execute_tool, get_tool_definitions,
+from .tools import (TOOL_RISK, get_tool_definitions,
                    AUTO_TOOL_NAMES, FIX_TOOL_NAMES)
 from .db import Store
+from .guardrails import Guardrail
 from .config import MAX_REACT_ITERATIONS, MAX_TOKENS, TEMPERATURE
 
 logger = logging.getLogger(__name__)
@@ -53,10 +54,12 @@ FIX_PROMPT = """你是一个大数据平台自治运维 agent。你的职责是�
 
 
 class ReActAgent:
-    def __init__(self, llm: LLMClient, store: Store, mode="fix"):
+    def __init__(self, llm: LLMClient, store: Store, mode="fix",
+                 guardrail: Guardrail = None):
         self.llm = llm
         self.store = store
         self.mode = mode
+        self.guardrail = guardrail or Guardrail(store)
         if mode == "auto":
             self.tool_names = AUTO_TOOL_NAMES
             self.system_prompt = AUTO_PROMPT
@@ -116,7 +119,7 @@ class ReActAgent:
                 print(f"  {tag} [工具] {name}({args}) risk={risk}")
                 self.store.log_event(sid, seq, "tool_call", {"name": name, "args": args, "risk": risk}); seq += 1
 
-                result = execute_tool(name, args)
+                result = self.guardrail.execute(name, args, session_id=sid)
                 print(f"  {tag} [结果] {json.dumps(result, ensure_ascii=False)[:200]}")
                 self.store.log_event(sid, seq, "tool_result", {"name": name, "result": result}); seq += 1
 

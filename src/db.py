@@ -18,6 +18,17 @@ CREATE TABLE IF NOT EXISTS session_events (
 CREATE TABLE IF NOT EXISTS cluster_state (
     id INTEGER PRIMARY KEY AUTOINCREMENT, snapshot_json TEXT, updated_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT, tool_name TEXT, args_json TEXT,
+    risk_level TEXT, status TEXT, result_json TEXT, ts INTEGER
+);
+CREATE TABLE IF NOT EXISTS approvals (
+    id TEXT PRIMARY KEY,
+    session_id TEXT, tool_name TEXT, args_json TEXT,
+    risk_level TEXT, dry_run_json TEXT,
+    status TEXT, decided_by TEXT, decided_at INTEGER, ts INTEGER
+);
 """
 
 

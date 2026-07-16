@@ -744,9 +744,13 @@ runbooks(
 - [x] 端到端验证（第一轮）：巡检 → 手动停 DataNode → 检测告警 → /fix 诊断修复（15 轮 ReAct, restart_service 因 JAVA_HOME 失败）
 - [x] 端到端验证（第二轮）：巡检 → 手动停 NameNode → 检测告警 → /fix 诊断（查日志SIGTERM→查KB→查指标排除OOM→查jps确认进程不在）→ restart_service CM API commands/start 启动 → hdfs_admin report 验证恢复 ✅ 完整闭环
 
-### M4 - 安全护栏
-- [ ] approval service（风险分级/超时/紧急覆盖/计数冷却）
-- [ ] dry-run + 审计 + 回滚 + 熔断升级
+### M4 - 安全护栏 ✅ 已完成
+- [x] 风险分级: 低危(自动) / 中危(执行+通知) / 高危(dry-run+审批) / 破坏性(备份+审批)
+- [x] dry-run 预演: 高危操作先返回"会发生什么"而不真执行
+- [x] 审批门: 高危操作记录到 approvals 表, console 模式自动批准, web 模式等人工
+- [x] 审计日志: 所有工具调用写 audit_log 表 (session/tool/args/risk/status/result/ts)
+- [x] 熔断升级: 连续失败 >= 3 次自动熔断, 冷却期 5min, 后续操作升级人工
+- [ ] 回滚机制: 当前 restart_service 为非破坏性操作(仅启动停止角色), 回滚为 edit_remote_config 预留
 
 ### M5 - KB + 学习闭环
 - [ ] sqlite-vec + bge-small(CPU) 检索
