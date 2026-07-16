@@ -32,3 +32,8 @@ secrets_local.*
 # OS
 .DS_Store
 Thumbs.db
+
+# Frontend
+web/node_modules/
+web/dist/
+web/.vite/

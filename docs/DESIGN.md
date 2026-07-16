@@ -756,10 +756,12 @@ runbooks(
 - [ ] sqlite-vec + bge-small(CPU) 检索
 - [ ] write_runbook 回写 + 人工审核
 
-### M6 - Web 控制台
-- [ ] FastAPI + WebSocket
-- [ ] 审批中心 + Agent 活动台 + 集群状态(嵌Grafana) + 管理面
-- [ ] 前端 admin 模板
+### M6 - Web 控制台 ✅ 已完成
+- [x] 后端 FastAPI: REST API (/api/sessions /api/approvals /api/audit) + WebSocket (/ws 事件推送)
+- [x] 事件总线: agent ReAct 循环事件 (reasoning/tool_call/tool_result) 实时推送到 WebSocket
+- [x] 前端 React + Vite: Agent 活动台 (实时 ReAct 循环) + 审批中心 (通过/拒绝)
+- [ ] 集群状态面板 (嵌 Grafana, 待 docker 环境搭建后接入)
+- [ ] 前端 admin 模板美化
 
 ### M7 - 演示与提交
 - [ ] 多故障剧本跑通

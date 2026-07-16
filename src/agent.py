@@ -1,6 +1,11 @@
 import json
 import logging
 
+try:
+    from .web.event_bus import bus
+except ImportError:
+    bus = None
+
 from .llm_client import LLMClient
 from .tools import (TOOL_RISK, get_tool_definitions,
                    AUTO_TOOL_NAMES, FIX_TOOL_NAMES)
@@ -95,6 +100,7 @@ class ReActAgent:
             if reasoning:
                 print(f"  {tag} [思考] {reasoning.strip()[:150]}")
                 self.store.log_event(sid, seq, "reasoning", {"text": reasoning}); seq += 1
+                if bus: bus.publish({"type": "agent_event", "session_id": sid, "kind": "reasoning", "content": {"text": reasoning[:500]}})
 
             assistant_msg = {"role": "assistant", "content": content}
             if tool_calls:
@@ -105,6 +111,8 @@ class ReActAgent:
                 ]
             messages.append(assistant_msg)
             self.store.log_event(sid, seq, "assistant", {"content": content, "tool_calls": tool_calls}); seq += 1
+            if bus and (content or tool_calls):
+                bus.publish({"type": "agent_event", "session_id": sid, "kind": "assistant", "content": {"text": (content or "")[:300], "tool_calls": tool_calls}})
 
             if not tool_calls:
                 print(f"  {tag} [完成] {content[:200]}")
@@ -118,10 +126,12 @@ class ReActAgent:
                 risk = TOOL_RISK.get(name, "low")
                 print(f"  {tag} [工具] {name}({args}) risk={risk}")
                 self.store.log_event(sid, seq, "tool_call", {"name": name, "args": args, "risk": risk}); seq += 1
+                if bus: bus.publish({"type": "agent_event", "session_id": sid, "kind": "tool_call", "content": {"name": name, "args": args, "risk": risk}})
 
                 result = self.guardrail.execute(name, args, session_id=sid)
                 print(f"  {tag} [结果] {json.dumps(result, ensure_ascii=False)[:200]}")
                 self.store.log_event(sid, seq, "tool_result", {"name": name, "result": result}); seq += 1
+                if bus: bus.publish({"type": "agent_event", "session_id": sid, "kind": "tool_result", "content": {"name": name, "result": result}})
 
                 messages.append({
                     "role": "tool", "tool_call_id": tc["id"],
