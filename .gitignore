@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual env
+venv/
+.venv/
+env/
+
+# Runtime artifacts
+aiops.db
+*.db
+log.txt
+opencode.txt
+
+# Secrets (本地秘密配置, 不提交)
+secrets_local.py
+secrets_local.*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
