@@ -1,3 +1,8 @@
+/* 全局重置 */
+html, body, #root {
+  margin: 0; padding: 0; height: 100%; overflow: hidden;
+}
+
 /* Markdown 渲染样式 (antd dark theme 下的补充) */
 .markdown-body { font-size: 13px; line-height: 1.6; color: #e2e8f0; }
 .markdown-body p { margin: 4px 0; }

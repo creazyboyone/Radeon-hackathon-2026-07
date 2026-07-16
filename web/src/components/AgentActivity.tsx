@@ -220,7 +220,7 @@ function AgentActivity() {
   }
 
   return (
-    <div style={{ display: 'flex', gap: 16, height: '100%', overflow: 'hidden', padding: 16 }}>
+    <div style={{ display: 'flex', gap: 16, height: '100%', overflow: 'hidden' }}>
       {/* 左侧: Session 树 */}
       <Card
         size="small"
