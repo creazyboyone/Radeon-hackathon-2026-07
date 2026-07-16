@@ -104,6 +104,16 @@ When creating a template (Step 2), turn on the **SSH Access (advanced)** toggle 
 
    Replace `<user>`, `<host>`, and `<port>` with the actual values shown in the instance details; type `yes` when prompted to confirm the fingerprint on first connect.
 
+
+> [!NOTE]
+> Some images may not include an SSH server by default. If `sshd` is unavailable, install and start it manually in terminal:
+```bash
+sudo apt update
+sudo apt install -y openssh-server
+mkdir -p /run/sshd
+which sshd
+/usr/sbin/sshd
+```
 ---
 
 ## ⭐ Using Model APIs (OpenAI-compatible)
