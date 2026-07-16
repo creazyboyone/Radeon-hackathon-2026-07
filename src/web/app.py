@@ -108,15 +108,14 @@ def create_app(store) -> FastAPI:
     async def ws_endpoint(websocket: WebSocket):
         await websocket.accept()
         q = bus.subscribe()
+        import queue as _q
         try:
             while True:
                 try:
-                    msg = await asyncio.to_thread(q.get, True, 30)
+                    msg = q.get_nowait()
                     await websocket.send_text(msg)
-                except Exception:
-                    # timeout — send heartbeat
-                    await websocket.send_text(
-                        json.dumps({"type": "ping"}))
+                except _q.Empty:
+                    await asyncio.sleep(0.3)
         except WebSocketDisconnect:
             pass
         finally:

@@ -6,7 +6,7 @@ body {
   color: #e2e8f0;
 }
 
-.app { max-width: 1200px; margin: 0 auto; padding: 20px; }
+.app { max-width: 1400px; margin: 0 auto; padding: 20px; }
 
 .header { margin-bottom: 24px; }
 .header h1 { font-size: 24px; margin-bottom: 16px; color: #38bdf8; }
@@ -22,9 +22,10 @@ body {
 
 .content {
   background: #1e293b; border-radius: 0 8px 8px 8px;
-  min-height: 500px; padding: 16px;
+  min-height: 600px; padding: 16px;
 }
 
+/* ---- Status bar ---- */
 .status-bar {
   display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
   font-size: 13px; color: #94a3b8;
@@ -39,21 +40,91 @@ body {
 }
 .clear-btn:hover { background: #475569; }
 
-.event-list { max-height: 600px; overflow-y: auto; }
-.event-item {
-  display: flex; align-items: flex-start; gap: 8px; padding: 8px 0;
-  border-bottom: 1px solid #334155; font-size: 13px;
+/* ---- Agent Activity: 左右布局 ---- */
+.agent-layout { display: flex; gap: 16px; }
+.session-panel { width: 260px; flex-shrink: 0; }
+.event-panel { flex: 1; min-width: 0; }
+
+/* ---- Session 树 ---- */
+.session-tree { display: flex; flex-direction: column; gap: 4px; }
+.session-node { }
+.session-item {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-radius: 6px; cursor: pointer; font-size: 13px; transition: background 0.2s;
+}
+.session-item:hover { background: #334155; }
+.session-item.selected { background: #0e7490; }
+.session-type {
+  width: 20px; height: 20px; border-radius: 4px; display: flex;
+  align-items: center; justify-content: center; font-size: 11px;
+  font-weight: 700; color: #fff;
+}
+.type-master { background: #6366f1; }
+.type-auto { background: #0ea5e9; }
+.type-fix { background: #f59e0b; }
+.session-id { font-family: monospace; font-size: 12px; color: #94a3b8; }
+.session-live {
+  font-size: 9px; padding: 1px 6px; background: #ef4444; color: #fff;
+  border-radius: 3px; font-weight: 700; animation: pulse 1.5s infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+.session-status { margin-left: auto; font-size: 11px; color: #64748b; }
+
+/* ---- Event cards ---- */
+.event-list { max-height: 700px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.event-card {
+  background: #0f172a; border-radius: 8px; padding: 12px 16px;
+  border: 1px solid #334155;
+}
+.event-card.md-card { padding: 16px; }
+.event-header {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  margin-bottom: 4px;
 }
 .event-tag {
-  padding: 2px 8px; border-radius: 4px; font-size: 11px;
+  padding: 2px 10px; border-radius: 4px; font-size: 11px;
   font-weight: 600; color: #fff; white-space: nowrap; min-width: 80px;
   text-align: center;
 }
-.event-session { color: #64748b; font-size: 11px; white-space: nowrap; padding-top: 2px; }
-.event-text { flex: 1; word-break: break-all; line-height: 1.5; }
+.expand-hint { font-size: 11px; color: #64748b; cursor: pointer; }
+.event-summary {
+  font-size: 13px; color: #cbd5e1; word-break: break-all; line-height: 1.5;
+  flex: 1;
+}
+.event-body { margin-top: 4px; }
+
+/* Markdown 渲染 */
+.markdown-body { font-size: 13px; line-height: 1.6; color: #e2e8f0; }
+.markdown-body p { margin: 4px 0; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  margin: 8px 0 4px; color: #38bdf8;
+}
+.markdown-body code {
+  background: #1e293b; padding: 1px 6px; border-radius: 3px;
+  font-family: 'Fira Code', monospace; font-size: 12px; color: #fbbf24;
+}
+.markdown-body pre {
+  background: #1e293b; padding: 8px 12px; border-radius: 6px;
+  overflow-x: auto; margin: 4px 0;
+}
+.markdown-body pre code { background: none; padding: 0; }
+.markdown-body ul, .markdown-body ol { margin: 4px 0 4px 20px; }
+.markdown-body li { margin: 2px 0; }
+.markdown-body strong { color: #f0abfc; }
+.markdown-body table { border-collapse: collapse; margin: 4px 0; }
+.markdown-body th, .markdown-body td { border: 1px solid #334155; padding: 4px 8px; }
+
+/* JSON 展开 */
+.event-json {
+  background: #0d1117; padding: 10px 14px; border-radius: 6px;
+  font-family: 'Fira Code', monospace; font-size: 11px; color: #94a3b8;
+  overflow-x: auto; max-height: 300px; overflow-y: auto; margin-top: 6px;
+  white-space: pre-wrap; word-break: break-all;
+}
 
 .empty { text-align: center; padding: 40px; color: #64748b; }
 
+/* ---- Approval Center ---- */
 .approval-list { display: flex; flex-direction: column; gap: 12px; }
 .approval-item {
   background: #0f172a; border-radius: 8px; padding: 12px;
