@@ -69,6 +69,11 @@ function AgentActivity() {
   const [loading, setLoading] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const sessionsRef = useRef<Session[]>([])
+  const autoScrollRef = useRef(false)  // 只有 WebSocket 新事件才自动滚动
+
+  // 保持 ref 最新
+  sessionsRef.current = sessions
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -97,24 +102,35 @@ function AgentActivity() {
     } catch {}
   }, [])
 
+  // 定时刷新 session 列表 (不触发事件重新加载)
   useEffect(() => {
     fetchSessions()
     const t = setInterval(fetchSessions, 5000)
     return () => clearInterval(t)
   }, [fetchSessions])
 
+  // 只在 selectedSid 变化时加载事件 (不依赖 sessions)
   useEffect(() => {
     if (!selectedSid) return
-    const s = sessions.find(x => x.id === selectedSid)
-    setSelectedSession(s || null)
+    const s = sessionsRef.current.find(x => x.id === selectedSid)
     if (s?.type === 'master') {
       fetchClusterSnap()
       setEvents([])
     } else {
       fetchEvents(selectedSid)
     }
-  }, [selectedSid, sessions, fetchEvents, fetchClusterSnap])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSid])
 
+  // sessions 变化时更新 selectedSession (不重新加载事件)
+  useEffect(() => {
+    if (selectedSid) {
+      const s = sessions.find(x => x.id === selectedSid)
+      setSelectedSession(s || null)
+    }
+  }, [sessions, selectedSid])
+
+  // WebSocket — 增量推送
   useEffect(() => {
     const ws = new WebSocket(`ws://${location.host}/ws`)
     wsRef.current = ws
@@ -124,16 +140,22 @@ function AgentActivity() {
       try {
         const data = JSON.parse(e.data)
         if (data.type !== 'agent_event') return
-        if (data.session_id === selectedSid)
+        if (data.session_id === selectedSid) {
+          autoScrollRef.current = true
           setEvents(prev => [...prev.slice(-300), data])
+        }
         if (data.kind === 'user_input') fetchSessions()
       } catch {}
     }
     return () => ws.close()
   }, [selectedSid, fetchSessions])
 
+  // 只在 WebSocket 新事件时滚动到底部
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (autoScrollRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+      autoScrollRef.current = false
+    }
   }, [events])
 
   // Tree 数据
@@ -158,7 +180,6 @@ function AgentActivity() {
   }
   const treeData = roots.map(buildTree)
 
-  // 渲染 master session 的集群状态卡
   const renderClusterSnap = () => {
     if (!clusterSnap) return <Empty description="无集群状态" />
     const services = clusterSnap.services || {}
@@ -199,13 +220,13 @@ function AgentActivity() {
   }
 
   return (
-    <div style={{ display: 'flex', gap: 16, height: '100%', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', gap: 16, height: '100%', overflow: 'hidden', padding: 16 }}>
       {/* 左侧: Session 树 */}
       <Card
         size="small"
-        style={{ width: 260, flexShrink: 0, overflow: 'auto' }}
-        title={<Badge status={connected ? 'success' : 'default'}
-          text={connected ? '实时' : '离线'} />}
+        style={{ width: 260, flexShrink: 0, height: '100%', display: 'flex', flexDirection: 'column' }}
+        styles={{ body: { flex: 1, overflow: 'auto', minHeight: 0 } }}
+        title={<Badge status={connected ? 'success' : 'default'} text={connected ? '实时' : '离线'} />}
       >
         {sessions.length === 0 ? <Empty description="无会话" /> : (
           <Tree
@@ -221,7 +242,8 @@ function AgentActivity() {
       {/* 右侧: 内容 */}
       <Card
         size="small"
-        style={{ flex: 1, overflow: 'auto', minWidth: 0 }}
+        style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column' }}
+        styles={{ body: { flex: 1, overflow: 'auto', minHeight: 0 } }}
         title={selectedSession
           ? `${selectedSession.type === 'master' ? '主控' : selectedSession.type === 'auto' ? '巡检' : '修复'} ${fmtTime(selectedSession.started_at)}`
           : '请选择会话'}

@@ -14,7 +14,6 @@ import './App.css'
 const { Sider, Header, Content } = Layout
 const { Title } = Typography
 
-// ---- 登录页 ----
 function LoginPage({ onLogin }: { onLogin: (name: string) => void }) {
   const [loading, setLoading] = useState(false)
   return (
@@ -59,8 +58,7 @@ function App() {
       <ConfigProvider theme={{ algorithm: theme.darkAlgorithm }}>
         <LoginPage onLogin={(name) => {
           localStorage.setItem('aiops_user', name)
-          setUser(name)
-          setLogged(true)
+          setUser(name); setLogged(true)
         }} />
       </ConfigProvider>
     )
@@ -71,10 +69,6 @@ function App() {
     { key: 'approval', icon: <SafetyOutlined />, label: '审批中心' },
   ]
   const currentLabel = menuItems.find(m => m.key === tab)?.label || ''
-  const breadcrumbItems = [
-    { title: '首页' },
-    { title: currentLabel },
-  ]
 
   return (
     <ConfigProvider theme={{
@@ -106,11 +100,11 @@ function App() {
           />
         </Sider>
 
-        <Layout style={{ overflow: 'hidden' }}>
-          {/* Header: 右侧用户信息/通知/主题切换 */}
+        {/* 内层 Layout 用 flex column, Header/面包屑固定高度, Content flex:1 填满 */}
+        <Layout style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', height: '100%' }}>
           <Header style={{
             display: 'flex', alignItems: 'center',
-            justifyContent: 'flex-end', padding: '0 24px',
+            justifyContent: 'flex-end', padding: '0 24px', flexShrink: 0,
           }}>
             <Space size="large">
               <Badge count={0} size="small">
@@ -137,15 +131,28 @@ function App() {
             </Space>
           </Header>
 
-          {/* 面包屑 */}
-          <div style={{ padding: '8px 24px' }}>
-            <Breadcrumb items={breadcrumbItems} />
+          <div style={{ padding: '8px 24px', flexShrink: 0 }}>
+            <Breadcrumb items={[{ title: '首页' }, { title: currentLabel }]} />
           </div>
 
-          {/* 内容区 */}
-          <Content style={{ padding: 16, height: '100%', overflow: 'hidden', flex: 1 }}>
-            {tab === 'agent' && <AgentActivity />}
-            {tab === 'approval' && <ApprovalCenter />}
+          {/* Content 用 flex:1 填满剩余空间, position:relative 让子元素 absolute 定位 */}
+          <Content style={{
+            flex: 1, overflow: 'hidden', padding: 16,
+            position: 'relative', minHeight: 0,
+          }}>
+            {/* 用 display 切换而非条件渲染, 避免 AgentActivity 卸载丢失 state */}
+            <div style={{
+              position: 'absolute', inset: 0,
+              display: tab === 'agent' ? 'flex' : 'none',
+            }}>
+              <AgentActivity />
+            </div>
+            <div style={{
+              position: 'absolute', inset: 0,
+              display: tab === 'approval' ? 'block' : 'none',
+            }}>
+              <ApprovalCenter />
+            </div>
           </Content>
         </Layout>
       </Layout>
