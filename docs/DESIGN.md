@@ -728,7 +728,7 @@ runbooks(
   - `get_metrics` → SSH 执行 free/df/top/jps
   - `read_logs` → SSH 读取远程日志，预压缩返回
   - `search_kb` → 关键词匹配（后续接入 sqlite-vec）
-  - `restart_service` → SSH 执行 hadoop-daemon.sh（后续对接 MCP/skill）
+  - `restart_service` → CM API commands/start 启动停止的角色（✅ 已验证修复成功）
   - `hdfs_admin` → SSH 执行 dfsadmin/fsck/dfs 只读命令
 - [x] 手写 ReAct 循环 + 单 session 跑通故障剧本（console+日志）
 - [ ] docker-compose 3 节点 Hadoop + Prometheus + Alertmanager + Grafana
@@ -741,7 +741,8 @@ runbooks(
 - [x] /auto 巡检周期 loop + /fix 抢占（告警驱动抢占巡检）
 - [x] SQLite 落库（sessions/events/cluster_state）
 - [x] 上下文策略：一次性 context + DB 状态卡传递 + 工具输出预压缩
-- [x] 端到端验证：巡检 → 手动停 DataNode → 检测告警 → /fix 诊断修复（15 轮 ReAct）
+- [x] 端到端验证（第一轮）：巡检 → 手动停 DataNode → 检测告警 → /fix 诊断修复（15 轮 ReAct, restart_service 因 JAVA_HOME 失败）
+- [x] 端到端验证（第二轮）：巡检 → 手动停 NameNode → 检测告警 → /fix 诊断（查日志SIGTERM→查KB→查指标排除OOM→查jps确认进程不在）→ restart_service CM API commands/start 启动 → hdfs_admin report 验证恢复 ✅ 完整闭环
 
 ### M4 - 安全护栏
 - [ ] approval service（风险分级/超时/紧急覆盖/计数冷却）
