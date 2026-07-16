@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 // ---- 类型 ----
 interface Session {
@@ -233,7 +234,7 @@ function AgentActivity() {
                   <div className="event-body">
                     {isMarkdown && (
                       <div className="markdown-body">
-                        <ReactMarkdown>{summary || ''}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{summary || ''}</ReactMarkdown>
                       </div>
                     )}
                     {isTool && isExpanded && (
