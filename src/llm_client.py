@@ -85,7 +85,7 @@ class LLMClient:
         resp = self.session.post(
             f"{self.base_url}/chat/completions",
             json=payload,
-            timeout=600,
+            timeout=(10, 120),
             stream=True,
         )
         resp.raise_for_status()

@@ -94,11 +94,18 @@ class ReActAgent:
                     kind = "stream_reasoning" if chunk["type"] == "reasoning" else "stream_content"
                     bus.publish({"type": "agent_event", "session_id": _sid, "kind": kind, "content": {"text": chunk["text"]}})
 
-            resp = self.llm.chat_stream(
-                messages=messages, tools=self.tool_defs,
-                max_tokens=MAX_TOKENS, temperature=TEMPERATURE,
-                on_chunk=_on_chunk,
-            )
+            try:
+                resp = self.llm.chat_stream(
+                    messages=messages, tools=self.tool_defs,
+                    max_tokens=MAX_TOKENS, temperature=TEMPERATURE,
+                    on_chunk=_on_chunk,
+                )
+            except Exception as e:
+                logger.warning(f"{tag} chat_stream failed ({e}), fallback to chat")
+                resp = self.llm.chat(
+                    messages=messages, tools=self.tool_defs,
+                    max_tokens=MAX_TOKENS, temperature=TEMPERATURE,
+                )
 
             content = resp["content"]
             reasoning = resp["reasoning"]
