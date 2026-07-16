@@ -1,3 +1,4 @@
+import json
 import logging
 import requests
 
@@ -43,7 +44,7 @@ class LLMClient:
             fn = tc.get("function", {})
             try:
                 args = fn.get("arguments")
-                args = args if isinstance(args, dict) else __import__("json").loads(args or "{}")
+                args = args if isinstance(args, dict) else json.loads(args or "{}")
             except Exception:
                 args = {}
             parsed_tool_calls.append({
@@ -59,4 +60,98 @@ class LLMClient:
             "finish_reason": choice.get("finish_reason", ""),
             "usage": data.get("usage", {}),
             "timings": data.get("timings", {}),
+        }
+
+    def chat_stream(self, messages, tools=None, tool_choice="auto",
+                    max_tokens=2048, temperature=0.7, on_chunk=None):
+        """流式输出 — 逐 token yield chunk, on_chunk 回调实时推送
+
+        on_chunk(chunk_dict) 被调用时:
+          {"type": "reasoning", "text": "..."}  — 思考增量
+          {"type": "content", "text": "..."}    — 响应增量
+        最终返回完整结果 (同 chat 方法的返回格式)
+        """
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice
+
+        resp = self.session.post(
+            f"{self.base_url}/chat/completions",
+            json=payload,
+            timeout=600,
+            stream=True,
+        )
+        resp.raise_for_status()
+
+        content_buf = ""
+        reasoning_buf = ""
+        tool_calls_buf = []
+
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            line = line.decode("utf-8")
+            if line.startswith("data: "):
+                line = line[6:]
+            if line.strip() == "[DONE]":
+                break
+            try:
+                chunk = json.loads(line)
+                delta = chunk["choices"][0].get("delta", {})
+
+                c = delta.get("content", "")
+                if c:
+                    content_buf += c
+                    if on_chunk:
+                        on_chunk({"type": "content", "text": c})
+
+                r = delta.get("reasoning_content", "")
+                if r:
+                    reasoning_buf += r
+                    if on_chunk:
+                        on_chunk({"type": "reasoning", "text": r})
+
+                if delta.get("tool_calls"):
+                    for tc in delta["tool_calls"]:
+                        idx = tc.get("index", 0)
+                        while len(tool_calls_buf) <= idx:
+                            tool_calls_buf.append({"id": "", "name": "", "arguments": ""})
+                        if tc.get("id"):
+                            tool_calls_buf[idx]["id"] = tc["id"]
+                        fn = tc.get("function", {})
+                        if fn.get("name"):
+                            tool_calls_buf[idx]["name"] = fn["name"]
+                        if fn.get("arguments"):
+                            tool_calls_buf[idx]["arguments"] += fn["arguments"]
+            except Exception:
+                continue
+
+        # 解析 tool_calls
+        parsed_tool_calls = []
+        for tc in tool_calls_buf:
+            if tc["name"]:
+                try:
+                    args = json.loads(tc["arguments"] or "{}")
+                except Exception:
+                    args = {}
+                parsed_tool_calls.append({
+                    "id": tc["id"],
+                    "name": tc["name"],
+                    "arguments": args,
+                })
+
+        return {
+            "content": content_buf,
+            "reasoning": reasoning_buf,
+            "tool_calls": parsed_tool_calls,
+            "finish_reason": "tool_calls" if parsed_tool_calls else "stop",
+            "usage": {},
+            "timings": {},
         }

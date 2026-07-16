@@ -88,9 +88,16 @@ class ReActAgent:
         for i in range(MAX_REACT_ITERATIONS):
             logger.info(f"{tag} --- iteration {i+1}/{MAX_REACT_ITERATIONS} ---")
 
-            resp = self.llm.chat(
+            # 流式输出: on_chunk 回调实时推送到 WebSocket
+            def _on_chunk(chunk, _sid=sid):
+                if bus:
+                    kind = "stream_reasoning" if chunk["type"] == "reasoning" else "stream_content"
+                    bus.publish({"type": "agent_event", "session_id": _sid, "kind": kind, "content": {"text": chunk["text"]}})
+
+            resp = self.llm.chat_stream(
                 messages=messages, tools=self.tool_defs,
                 max_tokens=MAX_TOKENS, temperature=TEMPERATURE,
+                on_chunk=_on_chunk,
             )
 
             content = resp["content"]
