@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Tree, Timeline, Card, Tag, Typography, Badge, Spin, Collapse, Empty } from 'antd'
+import {
+  Tree, Timeline, Card, Tag, Typography, Badge, Spin, Collapse,
+  Empty, Descriptions, Statistic,
+} from 'antd'
 import {
   BulbOutlined, RobotOutlined, ToolOutlined, ApiOutlined,
-  CheckCircleOutlined, ThunderboltOutlined,
+  CheckCircleOutlined, ThunderboltOutlined, DashboardOutlined,
 } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -17,12 +20,16 @@ interface AgentEvent { type: string; session_id: string; kind: string; content: 
 interface HistEvent { seq: number; kind: string; content: any; ts: number }
 
 const KIND_CFG: Record<string, { label: string; color: string; icon: any }> = {
-  reasoning:    { label: '思考', color: 'purple',  icon: <BulbOutlined /> },
-  assistant:    { label: '响应', color: 'blue',    icon: <RobotOutlined /> },
+  reasoning:    { label: '思考',   color: 'purple',  icon: <BulbOutlined /> },
+  assistant:    { label: '响应',   color: 'blue',    icon: <RobotOutlined /> },
   tool_call:    { label: '工具调用', color: 'orange', icon: <ToolOutlined /> },
   tool_result:  { label: '结果',   color: 'green',   icon: <ApiOutlined /> },
   user_input:   { label: '输入',   color: 'default', icon: <ThunderboltOutlined /> },
   final_answer: { label: '完成',   color: 'success', icon: <CheckCircleOutlined /> },
+}
+
+function fmtTime(ts: number): string {
+  return new Date(ts * 1000).toLocaleTimeString('zh-CN', { hour12: false })
 }
 
 function extractCall(name: string, args: any): string {
@@ -55,7 +62,9 @@ function extractResult(name: string, r: any): string {
 function AgentActivity() {
   const [sessions, setSessions] = useState<Session[]>([])
   const [selectedSid, setSelectedSid] = useState('')
+  const [selectedSession, setSelectedSession] = useState<Session | null>(null)
   const [events, setEvents] = useState<(HistEvent | AgentEvent)[]>([])
+  const [clusterSnap, setClusterSnap] = useState<any>(null)
   const [connected, setConnected] = useState(false)
   const [loading, setLoading] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
@@ -80,6 +89,14 @@ function AgentActivity() {
     setLoading(false)
   }, [])
 
+  const fetchClusterSnap = useCallback(async () => {
+    try {
+      const res = await fetch('/api/cluster/snapshot')
+      const data = await res.json()
+      setClusterSnap(data)
+    } catch {}
+  }, [])
+
   useEffect(() => {
     fetchSessions()
     const t = setInterval(fetchSessions, 5000)
@@ -87,8 +104,16 @@ function AgentActivity() {
   }, [fetchSessions])
 
   useEffect(() => {
-    if (selectedSid) fetchEvents(selectedSid)
-  }, [selectedSid, fetchEvents])
+    if (!selectedSid) return
+    const s = sessions.find(x => x.id === selectedSid)
+    setSelectedSession(s || null)
+    if (s?.type === 'master') {
+      fetchClusterSnap()
+      setEvents([])
+    } else {
+      fetchEvents(selectedSid)
+    }
+  }, [selectedSid, sessions, fetchEvents, fetchClusterSnap])
 
   useEffect(() => {
     const ws = new WebSocket(`ws://${location.host}/ws`)
@@ -111,6 +136,7 @@ function AgentActivity() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [events])
 
+  // Tree 数据
   const roots = sessions.filter(s => !s.parent_id)
   const buildTree = (s: Session): any => {
     const children = sessions.filter(c => c.parent_id === s.id)
@@ -123,7 +149,7 @@ function AgentActivity() {
           <Tag color={colors[s.type]} style={{ margin: 0, fontSize: 11 }}>
             {labels[s.type] || s.type}
           </Tag>
-          <Text code style={{ fontSize: 11 }}>{s.id.slice(0, 8)}</Text>
+          <Text style={{ fontSize: 11, color: '#94a3b8' }}>{fmtTime(s.started_at)}</Text>
           {!s.ended_at && <Badge status="processing" />}
         </span>
       ),
@@ -131,6 +157,46 @@ function AgentActivity() {
     }
   }
   const treeData = roots.map(buildTree)
+
+  // 渲染 master session 的集群状态卡
+  const renderClusterSnap = () => {
+    if (!clusterSnap) return <Empty description="无集群状态" />
+    const services = clusterSnap.services || {}
+    return (
+      <div>
+        <Card size="small" style={{ marginBottom: 16 }}>
+          <Statistic
+            title="集群整体状态"
+            value={clusterSnap.overall_health || 'UNKNOWN'}
+            prefix={<DashboardOutlined />}
+            valueStyle={{
+              color: clusterSnap.overall_health === 'GOOD' ? '#22c55e' : '#ef4444'
+            }}
+          />
+        </Card>
+        <Card size="small" title="服务状态">
+          {Object.entries(services).map(([name, info]: [string, any]) => (
+            <Descriptions
+              key={name}
+              size="small"
+              column={3}
+              bordered
+              style={{ marginBottom: 8 }}
+              items={[
+                { key: 'name', label: '服务', children: name },
+                { key: 'health', label: '健康', children: (
+                  <Tag color={info.health === 'GOOD' ? 'success' : 'error'}>
+                    {info.health || 'UNKNOWN'}
+                  </Tag>
+                )},
+                { key: 'roles', label: '角色数', children: info.role_count || 0 },
+              ]}
+            />
+          ))}
+        </Card>
+      </div>
+    )
+  }
 
   return (
     <div style={{ display: 'flex', gap: 16, height: '100%', overflow: 'hidden' }}>
@@ -141,9 +207,7 @@ function AgentActivity() {
         title={<Badge status={connected ? 'success' : 'default'}
           text={connected ? '实时' : '离线'} />}
       >
-        {sessions.length === 0 ? (
-          <Empty description="无会话" />
-        ) : (
+        {sessions.length === 0 ? <Empty description="无会话" /> : (
           <Tree
             treeData={treeData}
             selectedKeys={selectedSid ? [selectedSid] : []}
@@ -154,15 +218,17 @@ function AgentActivity() {
         )}
       </Card>
 
-      {/* 右侧: 事件流 */}
+      {/* 右侧: 内容 */}
       <Card
         size="small"
         style={{ flex: 1, overflow: 'auto', minWidth: 0 }}
-        title={selectedSid
-          ? `会话 ${selectedSid.slice(0, 8)} (${events.length} 条事件)`
+        title={selectedSession
+          ? `${selectedSession.type === 'master' ? '主控' : selectedSession.type === 'auto' ? '巡检' : '修复'} ${fmtTime(selectedSession.started_at)}`
           : '请选择会话'}
       >
-        {loading ? (
+        {selectedSession?.type === 'master' ? (
+          renderClusterSnap()
+        ) : loading ? (
           <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>
         ) : events.length === 0 ? (
           <Empty description="无事件" />
