@@ -775,30 +775,142 @@ runbooks(
 - [ ] 前端 admin 模板进一步美化
 
 ### M7 - 演示与提交
-- [ ] 多故障剧本跑通
-- [ ] 端到端录屏
-- [ ] README 复现步骤 + 架构图
-- [ ] 性能数据（tokens/s、TTFT、VRAM、故障解决耗时）
+
+> 清单见 `docs/TODO.md` T9（含多故障剧本 / 录屏 / README 复现 / 性能数据）。
 
 ---
 
-## 20. 待办与开放问题
+## 20. 开放问题（设计遗留决策）
+
+> 实施类待办已统一移至 `docs/TODO.md`（含 §21 实施步骤、M7 演示清单、待敲定参数）。本节仅保留**设计层面的开放决策**，不再重复待办。
 
 | 项 | 状态 | 备注 |
 |---|---|---|
 | MTP 是否被 llama.cpp 支持 | ❌ 当前未生效 | GGUF 含 MTP 层但未配 draft，日志报 `no implementations specified`。功能不影响，后续若启需配 speculative decoding |
 | 模型确切型号与官方 GGUF | ✅ 已确认 | `Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf`，27B 稠密 + tool-calling 可用 |
 | thinking 模型处理 | ✅ 已确认 | `reasoning_content` 独立字段，agent 直接读，无需解析 `<think>` |
-| 紧急覆盖"服务全挂"阈值 | 待定 | 需定具体指标阈值与持续时间 |
-| 紧急重启次数上限/冷却值 | 待定 | 如 max 2 次、冷却 30min |
-| 通知 webhook（可选） | 待定 | MVP 可不做，后加单条 ping |
-| KB 检索最终用向量还是 BM25 | 待定 | sqlite-vec 起步，嫌紧退 BM25 |
-| 审批超时时长 | 10min（暂定） | 可调 |
-| 巡检周期 | 5min（暂定） | 可调 |
-| `-t` 线程调优 | 待调 | EPYC 9334 共 128 线程，现 16，可试 32 |
-| restart_service 启动失败 | ✅ 已修复 | 改用 CM API commands/start 启动停止的角色, 通过 CM 管道管理, 不依赖 JAVA_HOME |
-| 集群环境 | 临时 CDH → docker | 当前用 CDH 6.3.2 三节点（176/177/178），后续切 docker-compose Apache Hadoop + Prometheus + Grafana |
-| CM API 单角色操作 | ❌ 不支持 | CM API v30 仅支持 commands/restart（整个服务），不支持单角色 stop/start/restart |
+| 紧急覆盖阈值/次数/冷却 | ✅ 已由 §21 解决 | 改为 attempt 节流（按 `(tool,target)` 查 audit_log，超限升级人工）；具体数值见 TODO 待敲定 |
+| 通知 webhook（可选） | 待定 | MVP 可不做，后加单条 ping（见 TODO 待敲定） |
+| KB 检索最终用向量还是 BM25 | 待定 | M5 待办（见 TODO） |
+| 审批超时 / 巡检周期 / `-t` 线程 | 暂定 | 10min / 5min / 16，均可调（见 TODO 待敲定） |
+| restart_service 启动失败 | ✅ 已修复 | 改用 CM API commands/start，通过 CM 管道管理，不依赖 JAVA_HOME |
+| 集群环境 | 临时 CDH → docker | 当前用 CDH 6.3.2 三节点（176/177/178），后续切 docker-compose（见 TODO 其他遗留） |
+| CM API 单角色操作 | ❌ 不支持 | CM API v30 仅支持 commands/restart（整个服务）；recover 档按服务单位执行 |
+
+---
+
+## 21. 安全护栏与分级自治 — 最终实现方案（已落定）
+
+> 本节为 §5 / §9 的最终落地方案，替代原 §5.3 紧急覆盖的模糊描述。
+> 设计评审结论：定级权归规则不归模型；规则 DB 化、页面可配；attempt 节流覆盖所有高危。
+
+### 21.1 设计原则
+
+- **定级权归规则，不归模型**：模型若参与定级，可能把不可逆操作判成"低风险自动执行"。风险等级必须由模型够不着的规则决定（呼应 §5.2）。
+- **工具白名单天然可分类**：agent 只能调 `TOOL_DEFINITIONS` 注册的工具，没有裸 shell。每个动作都能确定性映射到某一档，无需模型"理解意图"。
+- **fail-closed**：任何不在白名单 / 无匹配规则的工具，一律按 `irreversible` + 不可自动处理，绝不放过。
+- **模型的合法角色仅两项**：① 选哪个工具（tool-use reasoning，已在做）；② 给出理由文字（写进审计 / 给人看）。理由**不参与定级**。
+
+### 21.2 双轴模型
+
+| 轴 | 取值 | 含义 |
+|---|---|---|
+| 轴1 自治模式 `AUTONOMY` | `supervised` / `autonomous` | **谁来决策**：值守（等 Web 人工）还是无人值守（策略自动） |
+| 轴2 操作自治等级 `tier` | `recover` / `reversible` / `irreversible` / `low` / `medium` | **策略怎么动** |
+
+四档在 `autonomous` 下的行为：
+
+| 等级 | 典型操作 | autonomous 行为 | supervised 行为 |
+|---|---|---|---|
+| `low` / `medium` | 只读 / 重启非核心 | 维持现状（自动 / 执行+通知） | 维持现状 |
+| `recover`（可恢复幂等） | 重启已 `DOWN`/`STOPPED` 的服务 | 自动执行，受 attempt 节流（重试上限+冷却），连续失败升级人工 | 等人工审批 |
+| `reversible`（可回撤） | 改配置前先备份→改→重启 | 自动执行，强制先备份留回滚点，仍写审计 | 等人工审批 |
+| `irreversible`（不可逆） | `hdfs format` / `disk format` / `rm` 关键文件 / `drop table` | **永不自动**：直接放弃本次操作 + 发升级告警 | 等人工审批；超时=拒绝 |
+
+### 21.3 定级：纯规则 + DB 支撑 + 页面可配
+
+定级是**确定性纯函数**，由两层规则组成，均不调模型：
+
+```
+classify(tool_name, args) -> tier, autonomous:
+    1) 查 risk_rules 表（带 TTL 缓存）：
+       取 enabled 且 (tool_name==name 且 match_json 命中 args) 中 priority 最高者
+    2) 若无则取 tool_name=='*' 的默认规则
+    3) 若仍无 → 代码兜底 (tier=irreversible, autonomous=False)  # fail-closed
+    4) 运行时精炼（仍是规则，读 CM 实时状态）：
+       if tool == restart_service:
+           state = cm_role_state(args.service, args.node)
+           if state in {STOPPED, DOWN, UNKNOWN}: 维持 recover
+           else (RUNNING 但不健康): 降为等人工 (irreversible 流程)
+    5) 返回 (tier, autonomous)
+```
+
+**`risk_rules` 表（定级权威来源，页面可增删改）**
+
+```sql
+CREATE TABLE risk_rules (
+  id          TEXT PRIMARY KEY,
+  tool_name   TEXT NOT NULL,   -- 匹配工具名; '*' 表示默认
+  match_json  TEXT,            -- 可选: 按 args 细分 (如 action=='format'->irreversible), NULL=任意
+  tier        TEXT NOT NULL,   -- recover|reversible|irreversible|low|medium
+  autonomous  INTEGER NOT NULL DEFAULT 0,  -- autonomous 模式下是否允许自动执行
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  priority    INTEGER NOT NULL DEFAULT 0,   -- 同工具多条规则取最高
+  updated_at  INTEGER,
+  updated_by  TEXT
+);
+```
+
+- **种子数据**：首次启动若表空，从现有 `TOOL_RISK`（`tools.py`）灌默认规则，开箱即用。
+- **缓存**：`classify` 查库带 TTL 缓存（同告警缓存机制），避免每次工具调用打 DB。
+- **UI 护栏**：`irreversible` 档在管理页面**禁止**把 `autonomous` 勾成 1（代码强制），防管理员手滑。
+- **fail-closed 兜底**保留在代码常量，DB 规则缺失时生效。
+
+### 21.4 各档执行细节
+
+- **`recover`**：仅当 `roleState ∈ {STOPPED, DOWN, UNKNOWN}` 才自动重启（已挂，重启不会更糟）；若服务 `RUNNING` 但不健康（如 GC overhead / 假死），**不主动制造中断**，转人工或仅通知。重启走 CM `commands/start`（整服务，见 §20 限制），受 §21.5 attempt 节流。
+- **`reversible`**：执行前 `cp file file.bak.<ts>`，改完 reload/重启；回滚点可追溯。工具 `edit_remote_config`（§21.7 实现）落地此档。
+- **`irreversible`**：永不自动。supervised 等审批；autonomous 直接放弃 + 升级告警（不傻等超时）。
+- **`low`/`medium`**：维持 §9 现状（自动 / 执行+通知）。
+
+### 21.5 高危尝试节流（覆盖 recover + reversible）
+
+原熔断只数**失败**（`_failure_counts`）。新增**尝试节流**，覆盖所有高危档的**每次 autonomous 执行**（成功也算）：
+
+- **键**：`(tool, target)`，target = service / node / path（按工具取）。
+- **计数派生自 `audit_log`**（无需新状态，天然持久化、跨 session / 重启不丢）：
+
+```sql
+SELECT COUNT(*) FROM audit_log
+ WHERE tool_name=? AND json_extract(args_json, '$.service')=? AND status='executed'
+   AND ts > now - WINDOW;          -- WINDOW 为观察窗口
+```
+
+- **冷却**：两次 autonomous 执行间隔 < `cooldown` 则拒绝（取上次执行 `ts`）。
+- **超限升级**：`attempts >= MAX_ATTEMPTS` → 标记 escalated、停止该键的 autonomous 自动执行、发升级告警。
+- 与 §9 熔断互补：熔断管"一直失败"，attempt 节流管"试了 N 次还不成就放弃"。
+
+### 21.6 与现有机制关系
+
+- `AUTO_APPROVE`（`config.py`）演进为 `AUTONOMY` 模式（supervised/autonomous），语义更清晰。
+- `Guardrail` 现有 `auto_approve` 参数 = `AUTONOMY=='supervised'` 时 False。
+- `RISK_DESTRUCTIVE` 在 `tools.py`/`guardrails.py` 已定义却从未使用 → 本方案正式接入为 `irreversible` 档。
+- 现有熔断（`max_failures`/`cooldown`）保留作失败侧；attempt 节流作尝试侧。
+
+### 21.7 实施步骤
+
+> 详细可勾选清单见 `docs/TODO.md`（T1–T8）。
+
+| 步 | 内容 |
+|---|---|
+| T1 | `risk_rules` 表 + 迁移 + 种子（从 `TOOL_RISK` 灌默认） |
+| T2 | `classify()`：查库(缓存) + fail-closed + `match_json` 命中 |
+| T3 | `Guardrail` 四档分支 + `AUTONOMY` 轴接入 |
+| T4 | attempt 节流：按 `(tool,target)` 查 `audit_log` 计数 + 冷却 + 超限升级 |
+| T5 | `reversible` 落地：`edit_remote_config`（先 `cp .bak` 再改再 reload） |
+| T6 | `config`：`AUTONOMY` 模式替换 `AUTO_APPROVE` |
+| T7 | Web API：`risk_rules` CRUD + 管理页面 |
+| T8 | 联调：无人值守端到端（DOWN 自动重启重试 / irreversible 拒绝升级） |
 
 ---
 
