@@ -99,6 +99,7 @@ class LLMClient:
         content_buf = ""
         reasoning_buf = ""
         tool_calls_buf = []
+        stream_done = False
 
         try:
             for line in resp.iter_lines():
@@ -108,6 +109,7 @@ class LLMClient:
                 if line.startswith("data: "):
                     line = line[6:]
                 if line.strip() == "[DONE]":
+                    stream_done = True
                     break
                 try:
                     chunk = json.loads(line)
@@ -137,10 +139,14 @@ class LLMClient:
                                 tool_calls_buf[idx]["name"] = fn["name"]
                             if fn.get("arguments"):
                                 tool_calls_buf[idx]["arguments"] += fn["arguments"]
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"stream parse error (line may be incomplete): {e}")
                     continue
         finally:
             resp.close()  # 确保流式连接被释放, 防止连接池卡死
+
+        if not stream_done:
+            logger.warning("stream ended without [DONE] marker, output may be truncated")
 
         # 解析 tool_calls
         parsed_tool_calls = []

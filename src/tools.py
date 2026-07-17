@@ -9,6 +9,7 @@
 """
 import json
 import logging
+import shlex
 import subprocess
 import requests
 
@@ -26,13 +27,6 @@ RISK_LOW = "low"
 RISK_MEDIUM = "medium"
 RISK_HIGH = "high"
 RISK_DESTRUCTIVE = "destructive"
-
-# ---- SSH 命令白名单 (只读安全命令) ----
-SSH_READ_WHITELIST = [
-    "jps", "df -h", "free -m", "top -bn1", "cat /proc/loadavg",
-    "ps aux", "netstat", "ss", "grep", "tail", "head", "cat",
-    "uptime", "iostat", "vmstat",
-]
 
 # ---- 工具定义 (给 LLM 的 function schema) ----
 TOOL_DEFINITIONS = [
@@ -409,10 +403,17 @@ def _read_logs(service="", filter="", tail_n=50, node=""):
         logfile = _log_filename(svc_info, hostname)
         filepath = f"{log_dir}/{logfile}"
 
+        # 安全: 转义用户输入防止命令注入
+        try:
+            tail_n = int(tail_n)
+        except (TypeError, ValueError):
+            tail_n = 50
+        safe_filepath = shlex.quote(filepath)
         if filter:
-            cmd = f"grep -i '{filter}' {filepath} 2>/dev/null | tail -{tail_n}"
+            safe_filter = shlex.quote(filter)
+            cmd = f"grep -i {safe_filter} {safe_filepath} 2>/dev/null | tail -{tail_n}"
         else:
-            cmd = f"tail -{tail_n} {filepath} 2>/dev/null"
+            cmd = f"tail -{tail_n} {safe_filepath} 2>/dev/null"
 
         stdout, stderr, rc = ssh_exec(ip, cmd, timeout=30)
         lines = stdout.split("\n") if stdout else []
@@ -470,16 +471,6 @@ def _search_kb(query=""):
                if any(w in kb["title"] or w in kb["content"]
                       for w in query.split())]
     return {"query": query, "matches": len(results), "results": results}
-
-
-# 服务 -> daemon 启动脚本映射 (SSH 执行)
-_DAEMON_MAP = {
-    "hdfs":     {"script": f"{HADOOP_SBIN}/hadoop-daemon.sh", "role_prefix": ""},
-    "yarn":     {"script": f"{YARN_SBIN}/yarn-daemon.sh",  "role_prefix": ""},
-    "zookeeper": {"script": "", "role_prefix": "QuorumPeerMain"},
-    "hive":     {"script": "", "role_prefix": ""},
-    "oozie":    {"script": "", "role_prefix": ""},
-}
 
 
 @tool("restart_service")
@@ -552,11 +543,15 @@ def _hdfs_admin(action="", path="/"):
     nn_node = SERVICE_MAP["NameNode"]["nodes"][0]
     ip = _node_ip(nn_node)
 
+    # 安全: 校验 path 防止命令注入 (只允许合法 HDFS 路径)
+    if not path or not path.startswith("/") or ".." in path:
+        path = "/"
+    safe_path = shlex.quote(path)
     cmds = {
         "report": f"sudo -u {user} hdfs dfsadmin -report 2>&1 | head -30",
-        "fsck": f"sudo -u {user} hdfs fsck {path} 2>&1 | tail -20",
-        "ls": f"sudo -u {user} hdfs dfs -ls {path} 2>&1",
-        "du": f"sudo -u {user} hdfs dfs -du -h {path} 2>&1",
+        "fsck": f"sudo -u {user} hdfs fsck {safe_path} 2>&1 | tail -20",
+        "ls": f"sudo -u {user} hdfs dfs -ls {safe_path} 2>&1",
+        "du": f"sudo -u {user} hdfs dfs -du -h {safe_path} 2>&1",
     }
     cmd = cmds.get(action)
     if not cmd:
@@ -644,7 +639,7 @@ def get_cluster_snapshot():
         for r in role_data.get("items", []):
             if r.get("type") == svc_info["cm_role_type"]:
                 roles.append({
-                    "node": r.get("hostRef", {}).get("hostname", ""),
+                    "node": _resolve_hostname(r.get("hostRef", {})),
                     "state": r.get("roleState", ""),
                     "health": r.get("healthSummary", ""),
                 })

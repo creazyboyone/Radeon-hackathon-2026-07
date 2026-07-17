@@ -1,4 +1,5 @@
 import logging
+import signal
 import sys
 import threading
 
@@ -47,6 +48,17 @@ def main():
         llm, store,
         inspect_interval=15,
     )
+
+    # 优雅关闭: 收到信号时标记 master session 为 done
+    def _shutdown(signum, frame):
+        logger.info(f"收到信号 {signum}, 正在关闭...")
+        if orch.master_sid:
+            store.finish_session(orch.master_sid, summary="shutdown", status="done")
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
     orch.run(max_cycles=100)
 
     # 打印 session 树

@@ -35,7 +35,20 @@ CREATE TABLE IF NOT EXISTS approvals (
 class Store:
     def __init__(self, db_path: str):
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(_SCHEMA)
+        # 创建索引提升查询性能
+        self.conn.executescript(
+            "CREATE INDEX IF NOT EXISTS idx_events_session "
+            "ON session_events(session_id, seq);"
+            "CREATE INDEX IF NOT EXISTS idx_audit_session "
+            "ON audit_log(session_id);"
+            "CREATE INDEX IF NOT EXISTS idx_approvals_session "
+            "ON approvals(session_id);"
+            "CREATE INDEX IF NOT EXISTS idx_approvals_status "
+            "ON approvals(status);"
+        )
         self.conn.commit()
 
     def create_session(self, session_type="fix", parent_id=None, trigger=""):

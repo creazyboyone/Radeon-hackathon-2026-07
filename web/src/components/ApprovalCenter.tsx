@@ -27,7 +27,9 @@ function ApprovalCenter() {
       const res = await fetch('/api/approvals')
       const data = await res.json()
       setApprovals(data)
-    } catch {}
+    } catch (e) {
+      console.error('fetchApprovals failed:', e)
+    }
     setLoading(false)
   }, [])
 
@@ -38,12 +40,18 @@ function ApprovalCenter() {
   }, [fetchApprovals])
 
   const decide = async (id: string, status: string) => {
-    await fetch(`/api/approvals/${id}/decide`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status, decided_by: 'web-user' }),
-    })
-    message.success(`${status === 'approved' ? '已批准' : '已拒绝'}: ${id}`)
+    try {
+      const res = await fetch(`/api/approvals/${id}/decide`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status, decided_by: 'web-user' }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      message.success(`${status === 'approved' ? '已批准' : '已拒绝'}: ${id}`)
+    } catch (e) {
+      console.error('decide failed:', e)
+      message.error('操作失败')
+    }
     fetchApprovals()
   }
 

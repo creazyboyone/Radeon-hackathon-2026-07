@@ -76,19 +76,23 @@ function AgentActivity() {
   const wsRef = useRef<WebSocket | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const sessionsRef = useRef<Session[]>([])
+  const selectedSidRef = useRef('')
   const atBottomRef = useRef(true)
   const autoScrollRef = useRef(false)
 
   sessionsRef.current = sessions
+  selectedSidRef.current = selectedSid
 
   const fetchSessions = useCallback(async () => {
     try {
       const res = await fetch('/api/sessions')
       const data: Session[] = await res.json()
       setSessions(data)
-      if (data.length > 0 && !selectedSid) setSelectedSid(data[0].id)
-    } catch {}
-  }, [selectedSid])
+      if (data.length > 0 && !selectedSidRef.current) setSelectedSid(data[0].id)
+    } catch (e) {
+      console.error('fetchSessions failed:', e)
+    }
+  }, [])
 
   const fetchEvents = useCallback(async (sid: string) => {
     setLoading(true)
@@ -96,7 +100,10 @@ function AgentActivity() {
       const res = await fetch(`/api/sessions/${sid}/events`)
       const data: HistEvent[] = await res.json()
       setEvents(data.map(e => ({ ...e, session_id: sid, type: 'agent_event' })))
-    } catch { setEvents([]) }
+    } catch (e) {
+      console.error('fetchEvents failed:', e)
+      setEvents([])
+    }
     setLoading(false)
   }, [])
 
@@ -105,7 +112,9 @@ function AgentActivity() {
       const res = await fetch('/api/cluster/snapshot')
       const data = await res.json()
       setClusterSnap(data)
-    } catch {}
+    } catch (e) {
+      console.error('fetchClusterSnap failed:', e)
+    }
   }, [])
 
   useEffect(() => {
@@ -177,7 +186,9 @@ function AgentActivity() {
         // 其他事件直接追加
         autoScrollRef.current = true
         setEvents(prev => [...prev.slice(-300), data])
-      } catch {}
+      } catch (e) {
+        console.error('ws message parse error:', e)
+      }
     }
     return () => ws.close()
   }, [selectedSid, fetchSessions])

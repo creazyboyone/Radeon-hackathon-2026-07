@@ -1,24 +1,43 @@
 """FastAPI 后端 — REST API + WebSocket 事件推送"""
 import asyncio
 import json
+import queue
 import time
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .event_bus import bus
 
 
 def create_app(store) -> FastAPI:
     """创建 FastAPI 应用, 注入 Store"""
+    from .config import CONSOLE_TOKEN
+
     app = FastAPI(title="AIOps Agent Console")
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=[
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:5173",
+        ],
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # ---- 可选认证中间件 ----
+    @app.middleware("http")
+    async def auth_middleware(request: Request, call_next):
+        if CONSOLE_TOKEN:
+            token = request.headers.get("Authorization", "").replace("Bearer ", "")
+            if token != CONSOLE_TOKEN:
+                return JSONResponse(status_code=401, content={"detail": "unauthorized"})
+        return await call_next(request)
+
 
     # ---- REST API ----
 
@@ -108,14 +127,15 @@ def create_app(store) -> FastAPI:
     async def ws_endpoint(websocket: WebSocket):
         await websocket.accept()
         q = bus.subscribe()
-        import queue as _q
+        loop = asyncio.get_event_loop()
         try:
             while True:
                 try:
-                    msg = q.get_nowait()
+                    # 阻塞式获取, 通过 executor 运行避免阻塞事件循环
+                    msg = await loop.run_in_executor(None, lambda: q.get(timeout=1))
                     await websocket.send_text(msg)
-                except _q.Empty:
-                    await asyncio.sleep(0.3)
+                except queue.Empty:
+                    continue
         except WebSocketDisconnect:
             pass
         finally:

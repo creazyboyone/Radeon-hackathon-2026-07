@@ -102,10 +102,16 @@ class ReActAgent:
                 )
             except Exception as e:
                 logger.warning(f"{tag} chat_stream failed ({e}), fallback to chat")
-                resp = self.llm.chat(
-                    messages=messages, tools=self.tool_defs,
-                    max_tokens=MAX_TOKENS, temperature=TEMPERATURE,
-                )
+                try:
+                    resp = self.llm.chat(
+                        messages=messages, tools=self.tool_defs,
+                        max_tokens=MAX_TOKENS, temperature=TEMPERATURE,
+                    )
+                except Exception as e2:
+                    logger.error(f"{tag} chat fallback also failed: {e2}")
+                    self.store.log_event(sid, seq, "error", {"error": f"LLM unavailable: {e2}"}); seq += 1
+                    self.store.finish_session(sid, summary=f"LLM error: {e2}", status="error")
+                    return f"LLM error: {e2}"
 
             content = resp["content"]
             reasoning = resp["reasoning"]
@@ -114,7 +120,7 @@ class ReActAgent:
             if reasoning:
                 print(f"  {tag} [思考] {reasoning.strip()[:150]}")
                 self.store.log_event(sid, seq, "reasoning", {"text": reasoning}); seq += 1
-                if bus: bus.publish({"type": "agent_event", "session_id": sid, "kind": "reasoning", "content": {"text": reasoning[:500]}})
+                if bus: bus.publish({"type": "agent_event", "session_id": sid, "kind": "reasoning", "content": {"text": reasoning}})
 
             assistant_msg = {"role": "assistant", "content": content}
             if tool_calls:
@@ -148,7 +154,7 @@ class ReActAgent:
                 if bus: bus.publish({"type": "agent_event", "session_id": sid, "kind": "tool_result", "content": {"name": name, "result": result}})
 
                 messages.append({
-                    "role": "tool", "tool_call_id": tc["id"],
+                    "role": "tool", "tool_call_id": tc.get("id", ""),
                     "name": name, "content": json.dumps(result, ensure_ascii=False),
                 })
 

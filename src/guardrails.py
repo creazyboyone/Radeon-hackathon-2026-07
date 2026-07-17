@@ -144,8 +144,12 @@ class Guardrail:
     # ---- 审批门 ----
 
     def _request_approval(self, session_id, tool_name, args,
-                          risk, dry_run):
-        """请求审批 — 记录到 DB, console 模式自动批准"""
+                          risk, dry_run, timeout=300):
+        """请求审批 — 记录到 DB。
+
+        console 模式 (auto_approve=True): 立即自动批准
+        Web 模式 (auto_approve=False): 阻塞轮询 DB 等待人工审批, 超时自动拒绝
+        """
         approval_id = str(uuid.uuid4())[:8]
         self.store.conn.execute(
             "INSERT INTO approvals(id,session_id,tool_name,args_json,"
@@ -164,9 +168,24 @@ class Guardrail:
             return {"id": approval_id, "status": "approved",
                     "decided_by": "auto-approve(console)"}
         else:
-            # Web 模式: 返回 pending, 等待 WebSocket 人工审批
-            return {"id": approval_id, "status": "pending",
-                    "message": "等待人工审批"}
+            # Web 模式: 阻塞轮询 DB 等待人工审批
+            poll_interval = 2
+            waited = 0
+            while waited < timeout:
+                row = self.store.conn.execute(
+                    "SELECT status, decided_by FROM approvals WHERE id=?",
+                    (approval_id,)
+                ).fetchone()
+                if row and row[0] != "pending":
+                    return {"id": approval_id, "status": row[0],
+                            "decided_by": row[1] or ""}
+                time.sleep(poll_interval)
+                waited += poll_interval
+            # 超时自动拒绝
+            self._decide_approval(approval_id, "rejected", "timeout")
+            return {"id": approval_id, "status": "rejected",
+                    "decided_by": "timeout",
+                    "message": "审批超时, 已自动拒绝"}
 
     def _decide_approval(self, approval_id, status, decided_by):
         """更新审批状态"""

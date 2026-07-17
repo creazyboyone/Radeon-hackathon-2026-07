@@ -17,6 +17,11 @@ LLM_MODEL = os.getenv("LLM_MODEL", "/workspace/Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf"
 
 DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "aiops.db"))
 
+# ---- Web 控制台认证 ----
+# 设置 CONSOLE_TOKEN 后, 所有 API 请求需携带 Authorization: Bearer <token>
+# 留空则不启用认证 (仅限开发环境)
+CONSOLE_TOKEN = os.getenv("CONSOLE_TOKEN", "")
+
 MAX_REACT_ITERATIONS = 15
 MAX_TOKENS = 2048
 TEMPERATURE = 0.7

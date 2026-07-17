@@ -26,7 +26,6 @@ class Orchestrator:
         self.fault_delay = fault_delay
         self.last_inspect = 0
         self.master_sid = None
-        self.fix_in_progress = False
         self.start_time = time.time()
         # CM API 角色状态更新有延迟, 重启后等几秒再验证
         self.post_fix_delay = 5

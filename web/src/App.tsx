@@ -52,6 +52,22 @@ function App() {
   const [collapsed, setCollapsed] = useState(false)
   const [darkMode, setDarkMode] = useState(true)
   const [tab, setTab] = useState('agent')
+  const [pendingCount, setPendingCount] = useState(0)
+
+  useEffect(() => {
+    const fetchPending = async () => {
+      try {
+        const res = await fetch('/api/approvals?status=pending')
+        const data = await res.json()
+        setPendingCount(Array.isArray(data) ? data.length : 0)
+      } catch (e) {
+        console.error('fetch pending approvals failed:', e)
+      }
+    }
+    fetchPending()
+    const t = setInterval(fetchPending, 5000)
+    return () => clearInterval(t)
+  }, [])
 
   if (!logged) {
     return (
@@ -107,7 +123,7 @@ function App() {
             justifyContent: 'flex-end', padding: '0 24px', flexShrink: 0,
           }}>
             <Space size="large">
-              <Badge count={0} size="small">
+              <Badge count={pendingCount} size="small">
                 <BellOutlined style={{ fontSize: 18 }} />
               </Badge>
               <Switch
