@@ -11,7 +11,10 @@ import json
 import logging
 import shlex
 import subprocess
+import time
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .config import (
     CLUSTER_BACKEND, SSH_USER, SSH_PORT, SSH_OPTS,
@@ -101,7 +104,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "restart_service",
-            "description": "重启大数据服务(高危操作). 需提供理由. 核心服务(NameNode/ResourceManager)判高危, 非核心服务(DataNode/NodeManager)可自动执行",
+            "description": "重启大数据服务(高危操作). 需提供理由. 核心服务(NameNode/ResourceManager)判高危, 非核心服务(DataNode/NodeManager)可自动执行. 注意: CM API 以服务为单位启动所有已停止的角色, 指定 node 仅用于筛选检查范围, 不支持精确重启单节点",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -172,11 +175,24 @@ def ssh_exec(host_ip, command, timeout=30):
         return "", f"SSH error: {e}", -1
 
 
+# CM API session: 禁用重试 + 缩短超时, 避免 CM 不可达时拖死主循环
+_cm_session = None
+
+
+def _get_cm_session():
+    global _cm_session
+    if _cm_session is None:
+        _cm_session = requests.Session()
+        _cm_session.mount("http://", HTTPAdapter(max_retries=Retry(total=0)))
+        _cm_session.mount("https://", HTTPAdapter(max_retries=Retry(total=0)))
+    return _cm_session
+
+
 def cm_get(path):
     """CM API GET 请求"""
     url = f"http://{CM_HOST}:{CM_PORT}/api/{CM_API_VERSION}{path}"
     try:
-        resp = requests.get(url, auth=(CM_USER, CM_PASS), timeout=30)
+        resp = _get_cm_session().get(url, auth=(CM_USER, CM_PASS), timeout=(3, 5))
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
@@ -188,7 +204,7 @@ def cm_post(path):
     """CM API POST 请求 (重启/停止等)"""
     url = f"http://{CM_HOST}:{CM_PORT}/api/{CM_API_VERSION}{path}"
     try:
-        resp = requests.post(url, auth=(CM_USER, CM_PASS), timeout=30)
+        resp = _get_cm_session().post(url, auth=(CM_USER, CM_PASS), timeout=(3, 5))
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
@@ -532,7 +548,7 @@ def _restart_service(service="", reason="", node=""):
         "stopped_before": stopped_roles,
         "already_running": running_roles,
         "result": "starting" if cmd_data.get("id") else "failed",
-        "hint": "CM 正在启动停止的角色, 请等待几秒后用 get_service_status 验证恢复",
+        "hint": "CM API 以服务为单位启动所有 stopped 角色 (不支持单节点精确重启). 请等待几秒后用 get_service_status 验证恢复",
     }
 
 
@@ -618,10 +634,21 @@ def inject_fault(fault="datanode_oom"):
         logger.info(f"故障注入({fault}): 当前由用户手动操作, 请手动停止对应服务")
 
 
+# 告警缓存: 避免 orchestrator 每 2s 轮询时对 CM 发起几十次请求
+_alerts_cache = {"data": [], "ts": 0}
+_ALERTS_CACHE_TTL = 10  # 秒
+
+
 def get_pending_alerts():
-    """获取当前待处理告警 (供 orchestrator 调度用)"""
+    """获取当前待处理告警 (供 orchestrator 调度用), 带 10s 缓存避免 CM 轮询风暴"""
+    now = time.time()
+    if now - _alerts_cache["ts"] < _ALERTS_CACHE_TTL:
+        return _alerts_cache["data"]
     result = _get_alerts()
-    return result.get("alerts", [])
+    alerts = result.get("alerts", [])
+    _alerts_cache["data"] = alerts
+    _alerts_cache["ts"] = now
+    return alerts
 
 
 def get_cluster_snapshot():
@@ -647,10 +674,14 @@ def get_cluster_snapshot():
         bad = [r for r in roles if r["health"] not in ("GOOD", "DISABLED")]
         services[svc_name] = {
             "health": "BAD" if bad else "GOOD",
-            "roles": roles,
+            "role_count": len(roles),
         }
+    # 全局健康状态
+    bad_services = [k for k, v in services.items() if v["health"] != "GOOD"]
+    overall_health = "BAD" if bad_services else "GOOD"
     alerts = get_pending_alerts()
     return {
-        "services": {k: v["health"] for k, v in services.items()},
+        "overall_health": overall_health,
+        "services": services,
         "alerts": len(alerts),
     }

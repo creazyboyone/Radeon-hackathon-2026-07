@@ -11,7 +11,7 @@ from .tools import (TOOL_RISK, get_tool_definitions,
                    AUTO_TOOL_NAMES, FIX_TOOL_NAMES)
 from .db import Store
 from .guardrails import Guardrail
-from .config import MAX_REACT_ITERATIONS, MAX_TOKENS, TEMPERATURE
+from .config import MAX_REACT_ITERATIONS, MAX_TOKENS, TEMPERATURE, AUTO_APPROVE
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class ReActAgent:
         self.llm = llm
         self.store = store
         self.mode = mode
-        self.guardrail = guardrail or Guardrail(store)
+        self.guardrail = guardrail or Guardrail(store, auto_approve=AUTO_APPROVE)
         if mode == "auto":
             self.tool_names = AUTO_TOOL_NAMES
             self.system_prompt = AUTO_PROMPT
@@ -132,7 +132,7 @@ class ReActAgent:
             messages.append(assistant_msg)
             self.store.log_event(sid, seq, "assistant", {"content": content, "tool_calls": tool_calls}); seq += 1
             if bus and (content or tool_calls):
-                bus.publish({"type": "agent_event", "session_id": sid, "kind": "assistant", "content": {"text": (content or "")[:300], "tool_calls": tool_calls}})
+                bus.publish({"type": "agent_event", "session_id": sid, "kind": "assistant", "content": {"text": content or "", "tool_calls": tool_calls}})
 
             if not tool_calls:
                 print(f"  {tag} [完成] {content[:200]}")

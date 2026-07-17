@@ -32,12 +32,13 @@ class Orchestrator:
 
     def run(self, max_cycles=100):
         # 关闭旧的 running master session (避免多个 master 并存)
-        self.store.conn.execute(
-            "UPDATE sessions SET status='done', ended_at=? "
-            "WHERE type='master' AND status='running'",
-            (int(time.time()),)
-        )
-        self.store.conn.commit()
+        with self.store.lock:
+            self.store.conn.execute(
+                "UPDATE sessions SET status='done', ended_at=? "
+                "WHERE type='master' AND status='running'",
+                (int(time.time()),)
+            )
+            self.store.conn.commit()
         self.master_sid = self.store.create_session(
             session_type="master", trigger="orchestrator")
         print(f"\n{'='*60}")

@@ -151,16 +151,17 @@ class Guardrail:
         Web 模式 (auto_approve=False): 阻塞轮询 DB 等待人工审批, 超时自动拒绝
         """
         approval_id = str(uuid.uuid4())[:8]
-        self.store.conn.execute(
-            "INSERT INTO approvals(id,session_id,tool_name,args_json,"
-            "risk_level,dry_run_json,status,ts) "
-            "VALUES(?,?,?,?,?,?,?,?)",
-            (approval_id, session_id, tool_name,
-             json.dumps(args, ensure_ascii=False), risk,
-             json.dumps(dry_run, ensure_ascii=False),
-             "pending", int(time.time()))
-        )
-        self.store.conn.commit()
+        with self.store.lock:
+            self.store.conn.execute(
+                "INSERT INTO approvals(id,session_id,tool_name,args_json,"
+                "risk_level,dry_run_json,status,ts) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (approval_id, session_id, tool_name,
+                 json.dumps(args, ensure_ascii=False), risk,
+                 json.dumps(dry_run, ensure_ascii=False),
+                 "pending", int(time.time()))
+            )
+            self.store.conn.commit()
 
         if self.auto_approve:
             self._decide_approval(approval_id, "approved",
@@ -172,10 +173,11 @@ class Guardrail:
             poll_interval = 2
             waited = 0
             while waited < timeout:
-                row = self.store.conn.execute(
-                    "SELECT status, decided_by FROM approvals WHERE id=?",
-                    (approval_id,)
-                ).fetchone()
+                with self.store.lock:
+                    row = self.store.conn.execute(
+                        "SELECT status, decided_by FROM approvals WHERE id=?",
+                        (approval_id,)
+                    ).fetchone()
                 if row and row[0] != "pending":
                     return {"id": approval_id, "status": row[0],
                             "decided_by": row[1] or ""}
@@ -189,12 +191,13 @@ class Guardrail:
 
     def _decide_approval(self, approval_id, status, decided_by):
         """更新审批状态"""
-        self.store.conn.execute(
-            "UPDATE approvals SET status=?, decided_by=?, decided_at=? "
-            "WHERE id=?",
-            (status, decided_by, int(time.time()), approval_id)
-        )
-        self.store.conn.commit()
+        with self.store.lock:
+            self.store.conn.execute(
+                "UPDATE approvals SET status=?, decided_by=?, decided_at=? "
+                "WHERE id=?",
+                (status, decided_by, int(time.time()), approval_id)
+            )
+            self.store.conn.commit()
 
     # ---- 熔断 ----
 
@@ -225,6 +228,10 @@ class Guardrail:
         if not result:
             return True
         if isinstance(result, dict):
+            if result.get("error"):
+                return True
+            if result.get("circuit_broken"):
+                return True
             r = result.get("result", "")
             return r in ("failed", "error", "unsupported")
         return False
@@ -234,15 +241,16 @@ class Guardrail:
     def _audit(self, session_id, tool_name, args, status,
                risk, result=None):
         """审计日志 — 每次工具调用写 SQLite"""
-        self.store.conn.execute(
-            "INSERT INTO audit_log(session_id,tool_name,args_json,"
-            "risk_level,status,result_json,ts) VALUES(?,?,?,?,?,?,?)",
-            (session_id, tool_name,
-             json.dumps(args, ensure_ascii=False), risk, status,
-             json.dumps(result, ensure_ascii=False) if result else "",
-             int(time.time()))
-        )
-        self.store.conn.commit()
+        with self.store.lock:
+            self.store.conn.execute(
+                "INSERT INTO audit_log(session_id,tool_name,args_json,"
+                "risk_level,status,result_json,ts) VALUES(?,?,?,?,?,?,?)",
+                (session_id, tool_name,
+                 json.dumps(args, ensure_ascii=False), risk, status,
+                 json.dumps(result, ensure_ascii=False) if result else "",
+                 int(time.time()))
+            )
+            self.store.conn.commit()
 
     # ---- 通知 ----
 

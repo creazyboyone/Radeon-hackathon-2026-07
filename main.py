@@ -63,9 +63,11 @@ def main():
 
     # 打印 session 树
     logger.info("Session 树:")
-    for row in store.conn.execute(
-        "SELECT id, parent_id, type, status FROM sessions ORDER BY started_at"
-    ):
+    with store.lock:
+        rows = store.conn.execute(
+            "SELECT id, parent_id, type, status FROM sessions ORDER BY started_at"
+        ).fetchall()
+    for row in rows:
         prefix = "  └─" if row[1] else "  ├─"
         print(f"{prefix} [{row[2]}] {row[0]} status={row[3]} parent={row[1] or '-'}")
 
