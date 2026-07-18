@@ -52,7 +52,7 @@ else
     cd "$LLAMA_DIR"
     HIP_VISIBLE_DEVICES=0 nohup ./llama-server \
       -m "$MODEL_PATH" -c 131072 -ngl 999 \
-      -ctk q8_0 -ctv q8_0 -fa on --jinja \
+      -ctk q8_0 -ctv q8_0 -fa on --jinja --spec-type draft-mtp --spec-draft-n-max 3 \
       -t 16 -b 512 -ub 512 -np 1 \
       --host 0.0.0.0 --port "$PORT" --api-key "$API_KEY" \
       > /workspace/llama-server.log 2>&1 &
