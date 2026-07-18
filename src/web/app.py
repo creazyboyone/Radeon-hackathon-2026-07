@@ -44,10 +44,12 @@ def create_app(store) -> FastAPI:
     @app.get("/api/sessions")
     def list_sessions():
         with store.lock:
+            # 优先返回 master session，再按时间倒序返回其他
             rows = store.conn.execute(
                 "SELECT id, parent_id, type, status, trigger, "
                 "started_at, ended_at FROM sessions "
-                "ORDER BY started_at DESC LIMIT 50"
+                "ORDER BY CASE WHEN type='master' THEN 0 ELSE 1 END, "
+                "started_at DESC LIMIT 100"
             ).fetchall()
         return [
             {"id": r[0], "parent_id": r[1], "type": r[2], "status": r[3],
