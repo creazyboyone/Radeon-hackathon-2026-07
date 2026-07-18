@@ -1,162 +1,188 @@
-# AIOps Agent — 大数据集群自治运维
+# AIOps Agent — Autonomous Big Data Cluster Operations
 
-基于 LLM (Qwen 27B + ROCm) 的大数据平台自治运维 Agent，实现 24h 无人值守巡检 → 告警驱动诊断 → 安全护栏修复 → 验证恢复的全闭环。
+> **English** | [中文](./README_ZH.md)
 
-## 架构
+An LLM-powered autonomous operations agent for big data platforms (Hadoop/CDH), built on AMD Radeon GPU + ROCm. It implements a 24/7 closed-loop: auto-inspection → alert-driven diagnosis → guardrailed remediation → verification.
+
+## Architecture
 
 ```
-Orchestrator (master session, 常驻规则调度)
-  ├── /auto 巡检 (ReAct agent, 15 轮)
-  └── /fix 修复 (告警驱动抢占, ReAct agent, 15 轮)
-         ├── 工具层: CM API + SSH (8 个工具)
-         │   ├── 只读: get_service_status / get_alerts / get_metrics / read_logs / search_kb / hdfs_admin
-         │   └── 写操作: restart_service (CM API) / edit_remote_config (备份→改→reload)
-         ├── 安全护栏 (§21 双轴四档分级自治):
-         │   ├── 轴1 AUTONOMY: supervised (人工审批) / autonomous (无人值守)
-         │   ├── 轴2 tier: low / medium / recover / reversible / irreversible
-         │   ├── 定级: risk_rules DB (页面可配) + classify() + fail-closed
-         │   ├── recover: attempt 节流 (audit_log 派生计数) + 熔断 (类级跨会话累积)
-         │   ├── reversible: 先备份 .bak.<ts> 再改再 reload
-         │   └── irreversible: autonomous 模式立即拒绝 + 升级告警
-         └── 事件总线 → WebSocket → Web 控制台 (实时 ReAct 循环)
+Orchestrator (master session, persistent rule-based scheduler)
+  ├── /auto inspection (ReAct agent, 15 iterations)
+  └── /fix remediation (alert-driven preemption, ReAct agent, 15 iterations)
+         ├── Tool Layer: CM API + SSH (8 tools)
+         │   ├── Read-only: get_service_status / get_alerts / get_metrics / read_logs / search_kb / hdfs_admin
+         │   └── Mutating: restart_service (CM API) / edit_remote_config (backup→edit→reload)
+         ├── Safety Guardrail (§21 dual-axis four-tier autonomy):
+         │   ├── Axis 1 AUTONOMY: supervised (human approval) / autonomous (unattended)
+         │   ├── Axis 2 tier: low / medium / recover / reversible / irreversible
+         │   ├── Classification: risk_rules DB (UI-configurable) + classify() + fail-closed
+         │   ├── recover: attempt throttle (audit_log-derived) + circuit breaker (cross-session)
+         │   ├── reversible: backup .bak.<ts> before edit, reload after
+         │   └── irreversible: immediate reject + escalate alert in autonomous mode
+         └── Event Bus → WebSocket → Web Console (real-time ReAct loop)
 
 LLM: llama.cpp server (Qwopus3.6-27B-v2-MTP Q4_K_M, ROCm gfx1100, 128k context)
-     KV q8_0 + Flash Attention + MTP 投机解码 (n_max=1, 37.5 t/s, +30%)
+     KV q8_0 + Flash Attention + MTP speculative decoding (n_max=1, 37.5 t/s, +30%)
 DB: SQLite (sessions/events/cluster_state/audit_log/approvals/risk_rules)
-Web: FastAPI + WebSocket (后端) / React + Vite + Ant Design (前端)
+Web: FastAPI + WebSocket (backend) / React + Vite + Ant Design (frontend)
 ```
 
-## 快速开始
+## Quick Start
 
-### 1. 环境
+### 1. Prerequisites
+
+**Backend:**
 ```bash
-# 后端依赖
 pip install -r requirements.txt
+```
 
-# 前端依赖
+**Frontend:**
+```bash
 cd web && npm install
 ```
 
-### 2. 远程推理服务器 (AMD Radeon GPU)
+**Dependencies:**
+- Python 3.10+
+- Node.js 18+
+- An AMD Radeon GPU instance with ROCm support
+- A Hadoop/CDH cluster with Cloudera Manager API access
+
+### 2. Remote Inference Server (AMD Radeon GPU)
+
+Upload and run the bootstrap script to set up the inference server:
 ```bash
-# 上传并执行 bootstrap.sh (自动安装 SSH + modelscope 下载模型 + 启动 llama-server)
 scp -P <PORT> scripts/bootstrap.sh root@<REMOTE_IP>:/workspace/
 ssh -p <PORT> root@<REMOTE_IP> "sed -i 's/\r$//' /workspace/bootstrap.sh && bash /workspace/bootstrap.sh"
+```
 
-# SSH 隧道: 本地 18080 → 远程 llama-server 8080
+The bootstrap script automatically:
+1. Installs and starts SSH server
+2. Downloads the model via ModelScope (~16GB)
+3. Compiles/verifies llama.cpp with ROCm/HIPBLAS
+4. Starts llama-server with MTP speculative decoding
+
+Create an SSH tunnel for local access:
+```bash
 ssh -o ServerAliveInterval=30 -L 18080:127.0.0.1:8080 -p <PORT> root@<REMOTE_IP> -N
 ```
 
-### 3. 配置
+### 3. Configuration
+
+Create `src/secrets_local.py` (not committed, copy from `secrets_example.py`):
 ```python
-# src/secrets_local.py (不提交, 从 secrets_example.py 复制)
 LLM_API_KEY = "<your_api_key>"
 HADOOP_PASSWORD = "<your_password>"
+```
 
-# src/config.py (已默认配置, 按需修改)
+Key settings in `src/config.py` (defaults shown):
+```python
 LLM_BASE_URL = "http://127.0.0.1:18080/v1"
 LLM_MODEL = "/workspace/Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf"
 CLUSTER_NODES = ["hadoop01", "hadoop02", "hadoop03"]
-AUTONOMY = "supervised"  # 或 "autonomous" (无人值守)
+AUTONOMY = "supervised"  # or "autonomous" for unattended mode
 ```
 
-### 4. 启动
+### 4. Launch
+
 ```bash
-# 后端 (API + WebSocket + orchestrator 巡检)
+# Backend (API + WebSocket + orchestrator inspection loop)
 python main.py
 
-# 前端 (另一个终端)
+# Frontend (separate terminal)
 cd web && npm run dev
-# 打开 http://localhost:3000
+# Open http://localhost:3000
 ```
 
-## 功能模块
+## Modules
 
-| 模块 | 状态 | 说明 |
-|---|---|---|
-| M1 推理基座 | ✅ | llama.cpp ROCm/HIPBLAS, Qwen27B Q4_K_M, MTP 投机解码 |
-| M2 工具层 | ✅ | CM API + SSH, 8 个工具 (6 只读 + restart_service + edit_remote_config) |
-| M3 编排层 | ✅ | Orchestrator 常驻 + /auto 巡检 + /fix 抢占 + SQLite 落库 |
-| §21 安全护栏 | ✅ | 双轴四档 (AUTONOMY × tier) + risk_rules DB + classify + attempt 节流 |
-| M5 KB 向量检索 | 待做 | sqlite-vec + bge-small |
-| M6 Web 控制台 | ✅ | FastAPI+WebSocket 后端, React+Vite+AntDesign 前端 |
-| M7 演示提交 | 待做 | 录屏 + 性能数据 |
+| Module | Status | Description |
+|--------|--------|-------------|
+| M1 Inference | ✅ | llama.cpp ROCm/HIPBLAS, Qwen27B Q4_K_M, MTP speculative decoding |
+| M2 Tool Layer | ✅ | CM API + SSH, 8 tools (6 read-only + restart_service + edit_remote_config) |
+| M3 Orchestration | ✅ | Persistent orchestrator + /auto inspection + /fix preemption + SQLite persistence |
+| §21 Safety Guardrail | ✅ | Dual-axis four-tier (AUTONOMY × tier) + risk_rules DB + classify + attempt throttle |
+| M5 KB Retrieval | TODO | sqlite-vec + bge-small |
+| M6 Web Console | ✅ | FastAPI+WebSocket backend, React+Vite+AntDesign frontend |
+| M7 Demo & Submission | TODO | Screen recording + performance data |
 
-## AMD Radeon GPU 推理优化
+## AMD Radeon GPU Inference Optimization
 
-| 优化项 | 值 | 效果 |
-|--------|-----|------|
-| 模型 | Qwopus3.6-27B-v2-MTP Q4_K_M | 16GB, 27B 参数, 248K vocab |
-| KV cache | q8_0 量化 | VRAM 节省 ~50% |
-| Flash Attention | ON | 长序列加速 |
-| MTP 投机解码 | `--spec-type draft-mtp --spec-draft-n-max 1` | 37.5 t/s (baseline 28.9, +30%) |
-| Prompt cache | ON (8192 MiB) | 重复 prompt 加速 |
-| Context | 131072 (128k) | 支持长上下文 |
-| VRAM | 21.7G / 51.5G | 充裕 |
+| Optimization | Value | Effect |
+|-------------|-------|--------|
+| Model | Qwopus3.6-27B-v2-MTP Q4_K_M | 16GB, 27B params, 248K vocab |
+| KV cache | q8_0 quantization | ~50% VRAM savings |
+| Flash Attention | ON | Long-sequence acceleration |
+| MTP Speculative Decoding | `--spec-type draft-mtp --spec-draft-n-max 1` | 37.5 t/s (baseline 28.9, +30%) |
+| Prompt cache | ON (8192 MiB) | Repeated prompt acceleration |
+| Context | 131072 (128k) | Long-context support |
+| VRAM | 21.7G / 51.5G | Ample headroom |
 
-### MTP 基准测试
+### MTP Benchmark
 
-| 配置 | t/s (client) | 加速比 | 接受率 |
-|------|-------------|--------|--------|
-| baseline (无 MTP) | 28.9 | — | — |
-| **n_max=1 (最优)** | **37.5** | **+30%** | 77.4% |
+| Config | t/s (client) | Speedup | Accept Rate |
+|--------|-------------|---------|-------------|
+| baseline (no MTP) | 28.9 | — | — |
+| **n_max=1 (optimal)** | **37.5** | **+30%** | 77.4% |
 | n_max=2 | 34.2 | +18% | 61.0% |
 | n_max=3 | 34.0 | +18% | 53.7% |
 | n_max=5 | 31.7 | +10% | 44.6% |
 | n_max=8 | 29.5 | +2% | 24.0% |
 
-## Web 控制台
+## Safety Guardrail (§21 Dual-Axis Four-Tier)
 
-- **左侧菜单**: Agent 活动台 / 审批中心 / 风险规则 (可收缩)
-- **Agent 活动台**: Session 树 (master→auto/fix) + Timeline 事件流 (Markdown 渲染 + 流式输出 + 折叠 JSON)
-- **审批中心**: pending 列表 + 通过/拒绝 + 风险标签 + Badge 角标
-- **风险规则**: risk_rules CRUD (irreversible 档禁勾 autonomous)
-- **集群状态**: 选中 master session 显示服务健康状态卡 (overall_health + per-service)
+| Tier | Typical Ops | Autonomous Behavior | Supervised Behavior |
+|------|------------|---------------------|---------------------|
+| low / medium | Read-only / restart non-core | Auto-execute | Auto-execute |
+| recover | Restart DOWN service | Attempt throttle → auto-execute | Wait for approval |
+| reversible | Config edit (backup first) | Auto-execute (forced backup) | Wait for approval |
+| irreversible | hdfs format / rm | **Immediate reject + escalate** | Wait for approval |
 
-## 安全护栏 (§21 双轴四档)
+Classification authority belongs to rules (DB), not the model. Fail-closed: unknown tools default to irreversible + not auto-executable.
 
-| 档位 | 典型操作 | autonomous 行为 | supervised 行为 |
-|------|---------|---------------|----------------|
-| low / medium | 只读 / 重启非核心 | 自动执行 | 自动执行 |
-| recover | 重启已 DOWN 服务 | attempt 节流 → 自动执行 | 等人工审批 |
-| reversible | 改配置 (先备份) | 自动执行 (强制备份) | 等人工审批 |
-| irreversible | hdfs format / rm | **立即拒绝 + 升级告警** | 等人工审批 |
+## Web Console
 
-定级权归规则(DB), 不归模型。fail-closed: 未知工具一律 irreversible + 不可自动。
+- **Sidebar**: Agent Activity / Approval Center / Risk Rules (collapsible)
+- **Agent Activity**: Session tree (master→auto/fix) + Timeline event stream (Markdown rendering + streaming output + collapsible JSON)
+- **Approval Center**: Pending list + approve/reject + risk tags + badge counter
+- **Risk Rules**: risk_rules CRUD (irreversible tier disables autonomous checkbox)
+- **Cluster Status**: Service health cards (overall_health + per-service) when master session selected
 
-## 文件结构
+## File Structure
 
 ```
 src/
-├── agent.py          # ReAct agent (巡检/修复, 流式输出)
-├── orchestrator.py   # 常驻编排 (master session, /auto+/fix)
-├── llm_client.py     # LLM 客户端 (chat + chat_stream SSE)
-├── tools.py          # 8 个工具 (CM API + SSH)
-├── guardrails.py     # 安全护栏 (§21 双轴四档 + classify + attempt 节流)
+├── agent.py          # ReAct agent (inspection/remediation, streaming output)
+├── orchestrator.py   # Persistent orchestrator (master session, /auto+/fix)
+├── llm_client.py     # LLM client (chat + chat_stream SSE)
+├── tools.py          # 8 tools (CM API + SSH)
+├── guardrails.py     # Safety guardrail (§21 dual-axis four-tier + classify + throttle)
 ├── db.py             # SQLite Store (sessions/events/audit/approvals/risk_rules)
-├── config.py         # 配置 (从 secrets_local.py 读敏感信息)
+├── config.py         # Configuration (reads secrets from secrets_local.py)
 └── web/
     ├── app.py        # FastAPI (REST API + WebSocket + risk_rules CRUD)
-    └── event_bus.py  # 事件总线 (queue.Queue 桥接同步/异步)
+    └── event_bus.py # Event bus (queue.Queue bridges sync/async)
 web/                  # React + Vite + Ant Design
 ├── src/
-│   ├── App.tsx       # 布局 (Sider+Header+面包屑+Content)
-│   ├── App.css      # 全局样式 + Markdown 渲染
+│   ├── App.tsx       # Layout (Sider+Header+Breadcrumb+Content)
+│   ├── App.css      # Global styles + Markdown rendering
 │   └── components/
-│       ├── AgentActivity.tsx  # Agent 活动台
-│       ├── ApprovalCenter.tsx # 审批中心
-│       └── RiskRules.tsx      # 风险规则管理
-main.py               # 入口 (FastAPI 子线程 + orchestrator 主线程)
-scripts/bootstrap.sh   # 远程推理服务器初始化
-scripts/mtp_bench.py   # MTP 基准测试
-docs/DESIGN.md         # 详细设计文档 (§21 安全护栏方案)
-docs/TODO.md           # 项目进度总览
-docs/README.md         # 项目说明 (本文件)
+│       ├── AgentActivity.tsx  # Agent activity console
+│       ├── ApprovalCenter.tsx # Approval center
+│       ├── RiskRules.tsx      # Risk rules management
+│       └── KnowledgeBase.tsx  # Knowledge base (runbooks)
+main.py               # Entry point (FastAPI thread + orchestrator main thread)
+scripts/bootstrap.sh   # Remote inference server setup
+scripts/mtp_bench.py   # MTP benchmark script
+docs/DESIGN.md         # Detailed design doc (§21 safety guardrail, §22 gaps)
+docs/TODO.md           # Project progress overview
+docs/README.md         # Project README (English, this file)
+docs/README_ZH.md      # Project README (Chinese)
 ```
 
-## 端到端验证
+## End-to-End Verification
 
-| 轮次 | 故障 | 诊断 | 修复 | 验证 |
-|---|---|---|---|---|
-| 第一轮 | DataNode 停 | ✅ 15 轮 ReAct | ❌ JAVA_HOME 缺失 | - |
-| 第二轮 | NameNode 停 (SIGTERM) | ✅ 查日志→查KB→排除OOM→查jps | ✅ CM API commands/start | ✅ hdfs_admin report |
+| Round | Fault | Diagnosis | Remediation | Verification |
+|-------|-------|-----------|--------------|---------------|
+| 1 | DataNode stopped | ✅ 15-iteration ReAct | ❌ JAVA_HOME missing | — |
+| 2 | NameNode killed (SIGTERM) | ✅ logs→KB→rule-out-OOM→jps | ✅ CM API commands/start | ✅ hdfs_admin report |

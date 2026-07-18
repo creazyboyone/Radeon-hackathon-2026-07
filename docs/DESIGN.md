@@ -28,6 +28,8 @@
 18. [故障剧本（演示用）](#18-故障剧本演示用)
 19. [开发顺序与里程碑](#19-开发顺序与里程碑)
 20. [待办与开放问题](#20-待办与开放问题)
+21. [安全护栏与分级自治 — 最终实现方案](#21-安全护栏与分级自治--最终实现方案已落定)
+22. [与商业 AIOps 的差距 · 可借鉴特性](#22-与商业-aiops-的差距--可借鉴特性演进方向)
 
 ---
 
@@ -708,6 +710,8 @@ runbooks(
 
 每个剧本在 docker-compose 环境中可注入触发（kill 进程 / 填满磁盘 / 改坏配置），供演示与评委复现。
 
+> **实探补充（临时 CDH 集群，2026-07-18）**：hadoop01 上 Hive MetaStore 的 JVM 堆被误配为仅 **50MB**（`-Xmx52428800`，官方建议 ≥256MB）。任何中等 Hive 查询都会触发 Full GC/OOM，是**天然的高保真 Demo 故障点**——无需人为破坏即可复现"MetaStore OOM → Agent 诊断 → 调堆参 → 重启 → 验证 → 回写 runbook"完整闭环。迁移 docker 环境时可保留此配置作为剧本 6。
+
 ---
 
 ## 19. 开发顺序与里程碑
@@ -752,9 +756,12 @@ runbooks(
 - [x] 熔断升级: 连续失败 >= 3 次自动熔断, 冷却期 5min, 后续操作升级人工
 - [ ] 回滚机制: 当前 restart_service 为非破坏性操作(仅启动停止角色), 回滚为 edit_remote_config 预留
 
-### M5 - KB + 学习闭环
-- [ ] sqlite-vec + bge-small(CPU) 检索
-- [ ] write_runbook 回写 + 人工审核
+### M5 - KB + 学习闭环 ✅ 已完成
+- [x] `runbooks` 表 + FTS5 全文索引 + 触发器同步；6 条种子 runbook
+- [x] `kb.py`：bge-small-zh 嵌入（CPU 懒加载）+ numpy 余弦向量检索 + BM25 混合检索，缺依赖自动降级
+- [x] `write_runbook` 回写（置信度门控 <0.7 拒绝 + pending_review）+ Web 审核流程
+- [x] `agent.py` 学习闭环：fix 修复成功后自动提示回写 runbook
+- [x] 测试 `tests/test_m5_kb.py`（DB/FTS/CRUD/write_runbook/审核/置信度门控）
 
 ### M6 - Web 控制台 ✅ 已完成
 - [x] 后端 FastAPI: REST API (/api/sessions /api/approvals /api/audit /api/cluster/snapshot) + WebSocket (/ws 事件推送)
@@ -911,6 +918,40 @@ SELECT COUNT(*) FROM audit_log
 | T6 | `config`：`AUTONOMY` 模式替换 `AUTO_APPROVE` |
 | T7 | Web API：`risk_rules` CRUD + 管理页面 |
 | T8 | 联调：无人值守端到端（DOWN 自动重启重试 / irreversible 拒绝升级） |
+
+---
+
+## 22. 与商业 AIOps 的差距 · 可借鉴特性（演进方向）
+
+> 参考 Datadog AIOps / Dynatrace Davis / PagerDuty / Splunk ITSI。本节为**设计层判断**，具体可执行清单见 `docs/TODO.md` 第三/四节。
+
+### 22.1 能力差距（现状 vs 商业产品）
+
+| 维度 | 本项目现状 | 商业产品 | 差距 |
+|---|---|---|---|
+| 告警关联去重 | 逐条处理 CM 告警 | 时间窗口+拓扑聚合，降噪 80%+ | 无聚合，多告警可能重复 fix |
+| 根因分析 | ReAct 推理给结论 | ML 拓扑分析 + 置信度评分 + 因果链可视化 | 无置信度/可视化 |
+| 异常检测 | CM 规则阈值 | 基线 ML（动态阈值）、季节性 | 漏检慢速内存泄漏等 |
+| 预测性运维 | 无 | 容量/磁盘提前 N 天预警 | 纯被动响应 |
+| 对话式运维 | 仅 auto/fix 固定模式 | Chat with your data | 无 ad-hoc 自然语言接口 |
+| 多信号融合 | 指标+日志 | Metrics+Logs+Traces | 无分布式 Trace |
+| 时序趋势 | audit_log 仅存操作 | 时序 DB + 趋势图 | 无时序存储/展示 |
+| 事件集成 | 无 | Jira/ServiceNow 工单、Slack/PagerDuty | 无外部通知/工单 |
+| RBAC | 单一 token | 查看/操作/审批分权 | 无角色区分 |
+| 自动回滚 | 有备份无触发器 | 一键回滚 + CMDB 集成 | 备份未接回滚入口 |
+
+### 22.2 高性价比借鉴项（已挑入 TODO）
+
+结合现有架构与 hackathon 窗口，以下几项复用现有组件即可落地、且 Demo 增益最大：
+
+1. **对话式运维（Chat Mode）** — 复用 `ReActAgent`（只读工具）+ EventBus+WebSocket，是商业产品标志功能，展示效果最强。
+2. **告警聚合去重** — 数十行改造，直接补齐与商业产品最刺眼的差距。
+3. **GPU 监控工具** — 用服务器已装 `amdsmi`，直接切合赛题 AMD 主题。
+4. **一键回滚 / 外部 Webhook / 事后报告 / 时序趋势** — 对齐商业运维体验，成本可控。
+
+### 22.3 明确不做（超出 hackathon 范围）
+
+ML 异常检测、分布式 Trace、跨集群统一视图、细粒度 RBAC、SLO 实时计算——这些依赖长期数据积累或额外基础设施，非评分重点，仅作为远期方向记录，不投入实现。
 
 ---
 

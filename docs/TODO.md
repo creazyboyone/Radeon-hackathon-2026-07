@@ -1,9 +1,7 @@
 # 项目总体 Todo — Radeon AIOps Agent
 
-> 单一待办源。设计：`docs/DESIGN.md`（§21 为安全护栏最终方案）。
+> 单一待办源。设计：`docs/DESIGN.md`（§21 安全护栏 / §22 商业差距与可借鉴特性）。
 > 勾选框：`- [x]` 已完成 / `- [ ]` 待做。按里程碑与领域组织，呈现整体进度。
->
-> **收尾阶段参考**：`docs/ROADMAP.md`（部署形态 / Apache 迁移 / 测试策略决策）· `docs/CRITIQUE.md`（问题审查 + 云端&集群实探）
 
 ---
 
@@ -97,6 +95,72 @@
 - [ ] **T9. 演示与提交（M7）** — 多故障剧本跑通 / 端到端录屏 / README 复现步骤+架构图 / 性能数据
 - [ ] **M6 补** — 集群状态嵌 Grafana / 前端 admin 模板美化
 - [ ] **环境** — 切 docker-compose（Apache Hadoop + Prometheus + Alertmanager + Grafana），可复现供评委
+
+### 提交 PR 前 check（临交付时统一处理）
+- [ ] **DESIGN.md 英文化** — 与 README 一致，英文作默认主文件、中文保留：`DESIGN.md`(英文) + `DESIGN_ZH.md`(中文)，顶部加语言互链。当前中文版内容已定稿，仅差翻译，勿提前译（避免后续改动重复翻译）
+- [ ] 文档交叉引用最终核对（README/DESIGN/TODO 互链、文件结构清单与实际一致）
+
+---
+
+## 三、审计待办（2026-07-18 项目审查，按优先级）
+
+> 已修复 7 项（app.py 导入崩溃 / runbook 向量清空 / kb numpy+BM25 / 熔断+缓存加锁 / 密钥脱敏），不再列。
+> 下列为审查发现且**尚未处理**的项，实施后勾选。
+
+### P1 — 冲刺高价值（直接影响评分/Demo）
+- [ ] **对话式运维 Chat Mode** — Web 加聊天框，自然语言提问集群状态，后端复用 `ReActAgent`（工具权限同 auto 只读）。复用现有 EventBus+WebSocket，成本低、Demo 效果强
+- [ ] **告警聚合去重** — `get_pending_alerts` 对同服务多告警合并为一个 fix 任务，避免重复 fix（几十行）
+- [ ] **GPU 监控工具 `get_gpu_metrics`** — 用服务器已装的 `amdsmi` 库返回利用率/显存/温度，Demo 展示 AMD 主题（1-2h）
+- [ ] **健康总览 Dashboard** — Web 首页展示服务状态卡/活跃告警/最近 fix/autonomy 徽章
+
+### P2 — 架构健壮性
+- [ ] **Orchestrator 独立线程 + 异常兜底** — 移出主线程，加 `try/except`+重试，防单次异常终止整个进程（含 Web）
+- [ ] **审批不阻塞调度** — `supervised` 审批等待（现轮询 SQLite 最长 600s）改异步唤醒，或缩短超时并降级 reject，避免冻结 Orchestrator
+- [ ] **EventBus 孤儿队列清理** — WebSocket 异常断开时保证 `unsubscribe`，或队列加 TTL，防内存泄漏
+- [ ] **LLM 端点探活** — `LLMClient` 加 ping `/v1/models`，SSH 隧道断连时暂停 Orchestrator 并告警，而非静默失败传播到每次 Agent 迭代
+- [ ] **CM API 重试** — `Retry(total=0)` 改 `Retry(total=2, backoff_factor=0.5, status_forcelist=[502,503,504])`
+- [ ] **会话可中止** — Web 加"终止会话"按钮，`sessions.status=cancelled`，Agent 每轮迭代开始检查并提前退出
+
+### P2 — 交互易用
+- [ ] **审批实时推送** — 新审批请求经 WebSocket 推浏览器通知 / 顶部 `notification.warning`，Sider 审批项加数字 Badge
+- [ ] **Agent 进度提示** — 会话卡片显示"迭代 N/15"+已耗时
+- [ ] **工具结果友好渲染** — `read_logs` 错误行红/警告行黄高亮；`get_metrics` 用数值卡片替代原始 JSON
+- [ ] **知识库搜索强化** — 搜索框提升为首要元素，结果显示摘要+分数+关键词高亮
+
+### P3 — 部署与合规
+- [ ] **一键 Demo 脚本** — `scripts/demo.sh`：启动→注入故障→触发 fix→展示控制台，供评委复现
+- [ ] **控制平面 Dockerfile + compose** — Python 后端 / React 前端(nginx) / 整体编排；前端 `web/dist` 挂到 FastAPI StaticFiles
+- [ ] **`/health` 端点** — 返回状态 + LLM 可达性，供 Docker healthcheck
+- [ ] **`requirements` 固定版本** — `pip freeze` 或 `pyproject.toml + uv lock`，保证复现
+- [ ] **前端 API 地址可配** — Vite `import.meta.env.VITE_API_URL`，勿硬编码
+- [ ] **README 突出 AMD** — GPU 监控截图 + 推理性能对比图 + ROCm/HIPBLAS/FA/KV量化说明 + Agentic 特性展示节
+
+### P3 — 安全加固
+- [ ] **Web 默认鉴权** — `CONSOLE_TOKEN` 空时默认生成随机 token 打印到启动日志，而非放行所有
+- [ ] **工具入参 Pydantic 校验** — 类型/长度/正则，guardrail 层二次校验，拦截超长/特殊字符（尤其 `edit_remote_config`、`hdfs_admin`）
+- [ ] **`edit_remote_config` 配置语法校验** — 替换后 `xmllint --noout` 校验 XML，写入前 diff 预览记审计
+- [ ] **API 速率限制** — `slowapi` 对写操作限流（如 10 req/min）
+- [ ] **CORS 生产收紧** — origins 提取到配置，生产环境显式设置
+
+### P3 — 代码质量
+- [ ] **统一 logging** — 替换散落的 `print()`，标准 `logging` 分级，为 Web 提供日志流
+- [ ] **ReAct 上下文预算** — 追踪 `usage`，剩余窗口低于阈值时提前收尾/滑窗压缩，防 15 轮×2048 累积截断
+- [ ] **工具 schema 与签名同步** — `@tool` 从类型注解+docstring 生成 JSON Schema，或启动时校验一致性
+
+### P4 — 锦上添花特性
+- [ ] **一键回滚工具** — `rollback_config` 找 `.bak.<ts>` 最新备份恢复并记审计（备份逻辑已有）
+- [ ] **外部通知 Webhook** — fix 完成/告警升级推送 Slack/钉钉/企业微信
+- [ ] **事后报告自动生成** — fix 结束生成 Markdown post-mortem（时间线+根因+动作+影响），存 KB 可下载
+- [ ] **时序指标趋势图** — SQLite 时序表记录 `get_metrics`，前端 24h 趋势折线
+- [ ] **Runbook 版本 Diff** — 更新保留历史版本，UI 查看 diff
+- [ ] **并行 Fix 会话** — 同类型服务 fix 并行，同服务操作服务粒度锁串行
+- [ ] **Prometheus 指标导出** — FastAPI `/metrics`（`prometheus-fastapi-instrumentator`）
+
+---
+
+## 四、与商业 AIOps 的差距（选型参考）
+
+> 详见 `DESIGN.md` §22。核心短板：告警关联去重、RCA 置信度、预测性运维、对话式运维、时序趋势、外部工单/通知集成。上表 P1/P4 已挑出性价比最高的几项落地。
 
 ---
 
