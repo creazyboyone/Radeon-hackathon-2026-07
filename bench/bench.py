@@ -1,7 +1,7 @@
-import json, time, urllib.request
+import json, os, time, urllib.request
 
 URL = "http://127.0.0.1:8080/v1/chat/completions"
-KEY = "fengfeng123"
+KEY = os.getenv("LLM_API_KEY", "")
 HEADERS = {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"}
 
 def bench(label, prompt, max_tokens=2048):

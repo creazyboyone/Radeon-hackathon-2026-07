@@ -107,7 +107,7 @@
 
 - GPU：AMD Radeon PRO W7900D（48GB VRAM，gfx1100 / Navi 31，ROCm 官方支持）
 - CPU：AMD EPYC 9334 32-Core / 128 线程
-- 仅跑 llama-server，端口 8080，API key `fengfeng123`
+- 仅跑 llama-server，端口 8080，API key 由环境变量 `LLAMA_API_KEY` 注入（勿硬编码）
 - 存储：`/workspace` 持久卷 20G（放模型 + bootstrap.sh）；overlay 根非持久
 - llama-server 二进制：`/opt/llama.cpp/llama-server`（符号链接 -> `build/bin/llama-server`）
 - 连接：SSH `root@<REMOTE_IP> -p <PORT>`（安全组已放行）
@@ -216,7 +216,7 @@ HIP_VISIBLE_DEVICES=0 ./llama-server \
   -b 512 -ub 512 \
   -np 1 \
   --host 0.0.0.0 --port 8080 \
-  --api-key "fengfeng123"
+  --api-key "$LLAMA_API_KEY"
 ```
 
 **兜底环境（本地 7900XTX 24GB，远程不可用时退回）**
@@ -235,7 +235,7 @@ HIP_VISIBLE_DEVICES=0 ./llama-server \
   -b 512 -ub 512 \
   -np 1 \
   --host 0.0.0.0 --port 8080 \
-  --api-key "fengfeng123"
+  --api-key "$LLAMA_API_KEY"
 ```
 
 > 兜底环境差异：KV 降 q4_0、上下文降 64k（128k 放不下 24GB）、`-t` 按本机物理核调。日常巡检/修复不受影响，仅罕见深诊断的 128k 在主环境跑。

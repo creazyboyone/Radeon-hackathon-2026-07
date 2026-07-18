@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """MTP speculative decoding benchmark v2 - parses server log for accuracy"""
-import subprocess, time, re, requests
+import os, subprocess, time, re, requests
 
-HOST="127.0.0.1"; PORT=8080; API_KEY="fengfeng123"
+HOST="127.0.0.1"; PORT=8080; API_KEY=os.getenv("LLM_API_KEY", "")
 LLAMA_DIR="/opt/llama.cpp"; MODEL="/workspace/Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf"
 LOG="/workspace/llama-server.log"
 MSG=[{"role":"system","content":"you are a helpful expert"},{"role":"user","content":"Describe 5 challenges in Hadoop cluster operations with scenarios and solutions, about 800 words"}]

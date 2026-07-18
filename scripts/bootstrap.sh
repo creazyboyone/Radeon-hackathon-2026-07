@@ -6,13 +6,16 @@ LOG=/workspace/bootstrap.log
 exec > >(tee -a "$LOG") 2>&1
 echo "===== bootstrap $(date) ====="
 
-SSH_PUBKEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILE26aXvfany6iLqzLswaV/UoKGmbEjQq/ZFD+TV0aPJ 1020401390@qq.com'
+# SSH 公钥与 API key 从环境变量注入 (勿硬编码提交):
+#   export SSH_PUBKEY="ssh-ed25519 AAAA... you@host"
+#   export LLAMA_API_KEY="your-key"
+SSH_PUBKEY="${SSH_PUBKEY:-}"
 MODEL_PATH=/workspace/Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf
 MODEL_REPO=Jackrong/Qwopus3.6-27B-v2-MTP-GGUF
 MODEL_FILE=Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf
 LLAMA_DIR=/opt/llama.cpp
 PORT=8080
-API_KEY=fengfeng123
+API_KEY="${LLAMA_API_KEY:-}"
 
 # 1. SSH
 echo "[1/4] 安装 SSH..."
@@ -21,7 +24,11 @@ if ! command -v sshd >/dev/null 2>&1; then
 fi
 mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh
 touch /root/.ssh/authorized_keys
-grep -qF "$SSH_PUBKEY" /root/.ssh/authorized_keys 2>/dev/null || echo "$SSH_PUBKEY" >> /root/.ssh/authorized_keys
+if [ -n "$SSH_PUBKEY" ]; then
+  grep -qF "$SSH_PUBKEY" /root/.ssh/authorized_keys 2>/dev/null || echo "$SSH_PUBKEY" >> /root/.ssh/authorized_keys
+else
+  echo "  [提示] 未设置 SSH_PUBKEY 环境变量, 跳过公钥写入"
+fi
 chmod 600 /root/.ssh/authorized_keys
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
 pgrep -x sshd >/dev/null 2>&1 || /usr/sbin/sshd
@@ -50,11 +57,13 @@ if pgrep -f "llama-server" >/dev/null 2>&1; then
 else
   if [ -f "$MODEL_PATH" ] && [ -x "$LLAMA_DIR/llama-server" ]; then
     cd "$LLAMA_DIR"
+    # API key 为空则不启用鉴权 (适合纯本地 SSH 隧道场景)
+    [ -n "$API_KEY" ] && API_KEY_ARG="--api-key $API_KEY" || API_KEY_ARG=""
     HIP_VISIBLE_DEVICES=0 nohup ./llama-server \
       -m "$MODEL_PATH" -c 131072 -ngl 999 \
       -ctk q8_0 -ctv q8_0 -fa on --jinja --spec-type draft-mtp --spec-draft-n-max 1 \
       -t 16 -b 512 -ub 512 -np 1 \
-      --host 0.0.0.0 --port "$PORT" --api-key "$API_KEY" \
+      --host 0.0.0.0 --port "$PORT" $API_KEY_ARG \
       > /workspace/llama-server.log 2>&1 &
     echo "  启动中 (PID $!), 日志 /workspace/llama-server.log"
     sleep 10
