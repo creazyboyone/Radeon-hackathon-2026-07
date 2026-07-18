@@ -276,6 +276,10 @@ def create_app(store) -> FastAPI:
                     await websocket.send_text(msg)
                 except queue.Empty:
                     continue
+                except RuntimeError:
+                    # 进程关闭时默认线程池已 shutdown, run_in_executor 无法再提交
+                    # (cannot schedule new futures after shutdown) -> 干净退出
+                    break
         except WebSocketDisconnect:
             pass
         finally:

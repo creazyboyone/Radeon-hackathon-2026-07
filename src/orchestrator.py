@@ -29,8 +29,17 @@ class Orchestrator:
         self.start_time = time.time()
         # CM API 角色状态更新有延迟, 重启后等几秒再验证
         self.post_fix_delay = 5
+        # 停止标志: 信号 handler 设置后, 巡检循环自然退出 (优雅关闭)
+        self._stop = False
 
-    def run(self, max_cycles=100):
+    def stop(self):
+        """请求常驻循环优雅停止 (由信号 handler 调用)。"""
+        self._stop = True
+
+    def run(self, max_cycles=None):
+        """常驻巡检循环。max_cycles=None 表示无限运行 (24h 无人值守),
+        传入正整数仅用于测试/演示限制轮数。收到信号调用 stop() 后优雅退出。"""
+        self._stop = False  # 重置 (支持 run 被多次调用)
         # 关闭旧的 running master session (避免多个 master 并存)
         with self.store.lock:
             self.store.conn.execute(
@@ -50,38 +59,48 @@ class Orchestrator:
         print(f"{'='*60}\n")
 
         cycle = 0
-        while cycle < max_cycles:
+        while not self._stop and (max_cycles is None or cycle < max_cycles):
             cycle += 1
             elapsed = int(time.time() - self.start_time)
 
-            # 检查告警 -> 抢占
-            alerts = get_pending_alerts()
-            if alerts:
-                alert = alerts[0]
-                print(f"\n>>> [T+{elapsed}s] 检测到告警: {alert['alertname']} "
-                      f"severity={alert['severity']}")
-                if alert.get('node'):
-                    print(f">>> 节点: {alert['node']}, 状态: {alert.get('roleState','')}")
-                print(f">>> 启动 /fix (抢占巡检) <<<\n")
-                self._run_fix(alert, elapsed)
-                # fix 完成后等待 CM 更新状态
-                print(f">>> 等待 {self.post_fix_delay}s 让状态更新...")
-                time.sleep(self.post_fix_delay)
-                # fix 完成后强制立即巡检验证
-                self.last_inspect = 0
-                continue
+            try:
+                # 检查告警 -> 抢占
+                alerts = get_pending_alerts()
+                if alerts:
+                    alert = alerts[0]
+                    print(f"\n>>> [T+{elapsed}s] 检测到告警: {alert['alertname']} "
+                          f"severity={alert['severity']}")
+                    if alert.get('node'):
+                        print(f">>> 节点: {alert['node']}, 状态: {alert.get('roleState','')}")
+                    print(f">>> 启动 /fix (抢占巡检) <<<\n")
+                    self._run_fix(alert, elapsed)
+                    # fix 完成后等待 CM 更新状态
+                    print(f">>> 等待 {self.post_fix_delay}s 让状态更新...")
+                    time.sleep(self.post_fix_delay)
+                    # fix 完成后强制立即巡检验证
+                    self.last_inspect = 0
+                    continue
 
-            # 到点巡检
-            if time.time() - self.last_inspect >= self.inspect_interval:
-                print(f"\n>>> [T+{elapsed}s] 定时巡检 -> 启动 /auto <<<\n")
-                self._run_auto(elapsed)
-                self.last_inspect = time.time()
+                # 到点巡检
+                if time.time() - self.last_inspect >= self.inspect_interval:
+                    print(f"\n>>> [T+{elapsed}s] 定时巡检 -> 启动 /auto <<<\n")
+                    self._run_auto(elapsed)
+                    self.last_inspect = time.time()
+                    continue
+            except Exception as e:
+                # 单轮异常 (LLM 断连 / CM API 超时等) 不终止常驻循环, 记录后退避重试
+                logger.exception(f"[T+{elapsed}s] 调度轮次异常, 跳过本轮: {e}")
+                time.sleep(5)
                 continue
 
             time.sleep(2)
 
+        # 收尾: master session 标记为 done (供 Web 回看)
+        if self.master_sid:
+            self.store.finish_session(self.master_sid, summary="stopped", status="done")
+        reason = "收到停止信号" if self._stop else "达到最大轮数"
         print(f"\n{'='*60}")
-        print(f"  Orchestrator 结束 (共 {cycle} 轮)")
+        print(f"  Orchestrator 停止 ({reason}, 共 {cycle} 轮)")
         print(f"{'='*60}")
 
     def _run_auto(self, elapsed):

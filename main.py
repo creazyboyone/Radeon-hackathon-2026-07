@@ -53,17 +53,25 @@ def main():
         inspect_interval=15,
     )
 
-    # 优雅关闭: 收到信号时标记 master session 为 done
+    # 优雅关闭: 第一次信号设停止标志, 巡检循环自然退出; 再次中断则强制退出
+    # 不用 sys.exit() 强杀 daemon (会触发 uvicorn 线程池关闭中途的 RuntimeError)
+    stop_requested = [False]
+
     def _shutdown(signum, frame):
-        logger.info(f"收到信号 {signum}, 正在关闭...")
-        if orch.master_sid:
-            store.finish_session(orch.master_sid, summary="shutdown", status="done")
-        sys.exit(0)
+        if not stop_requested[0]:
+            stop_requested[0] = True
+            logger.info(f"收到信号 {signum}, 正在优雅停止... (再次中断可强制退出)")
+            orch.stop()
+        else:
+            logger.info("强制退出")
+            if orch.master_sid:
+                store.finish_session(orch.master_sid, summary="interrupted", status="done")
+            raise SystemExit(1)
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    orch.run(max_cycles=100)
+    orch.run()  # 常驻: 默认无限巡检, 收到信号后优雅退出
 
     # 打印 session 树
     logger.info("Session 树:")
