@@ -10,6 +10,7 @@ from src.config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, DB_PATH
 from src.llm_client import LLMClient
 from src.db import Store
 from src.orchestrator import Orchestrator
+from src.tools import set_store
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,6 +35,9 @@ def main():
 
     llm = LLMClient(LLM_BASE_URL, LLM_API_KEY, LLM_MODEL)
     store = Store(DB_PATH)
+
+    # M5: 注入 store 到 tools 模块, 供 search_kb / write_runbook 访问知识库
+    set_store(store)
 
     # 启动 web 控制台 (子线程)
     web_thread = threading.Thread(

@@ -13,7 +13,7 @@ from .event_bus import bus
 
 def create_app(store) -> FastAPI:
     """创建 FastAPI 应用, 注入 Store"""
-    from .config import CONSOLE_TOKEN
+    from src.config import CONSOLE_TOKEN
 
     app = FastAPI(title="AIOps Agent Console")
 
@@ -147,6 +147,119 @@ def create_app(store) -> FastAPI:
     def delete_risk_rule(rid: str):
         store.delete_risk_rule(rid)
         return {"id": rid, "status": "deleted"}
+
+    # ---- 知识库 runbooks CRUD (M5) ----
+    # 注意: 静态路径 (search/stats) 必须在动态路径 ({rb_id}) 之前定义
+
+    @app.get("/api/runbooks")
+    def list_runbooks(status: str = "", source: str = "", keyword: str = ""):
+        """查询 runbook 列表 (不返回 embedding)"""
+        return store.get_runbooks(
+            status=status or None,
+            source=source or None,
+            keyword=keyword or None,
+        )
+
+    @app.get("/api/runbooks/search")
+    def search_runbooks(q: str = "", limit: int = 5):
+        """知识库检索 (混合向量+BM25, 供前端测试)"""
+        if not q:
+            return {"query": "", "results": []}
+        try:
+            import importlib
+            kb_module = importlib.import_module("src.kb")
+            kb_module.ensure_embeddings(store)
+            results = kb_module.hybrid_search(store, q, limit=limit)
+        except Exception as e:
+            # 降级 FTS
+            results = store.search_runbooks_fts(q, limit=limit)
+        # 精简返回
+        return {
+            "query": q,
+            "matches": len(results),
+            "results": [
+                {"id": r.get("id", ""), "title": r["title"],
+                 "content": r.get("content", "")[:500],
+                 "tags": r.get("tags", ""), "score": r.get("score", 0),
+                 "match_type": r.get("match_type", "")}
+                for r in results
+            ],
+        }
+
+    @app.get("/api/runbooks/stats")
+    def runbook_stats():
+        """知识库统计 (用于首页 Dashboard)"""
+        all_rbs = store.get_runbooks()
+        return {
+            "total": len(all_rbs),
+            "approved": len([r for r in all_rbs if r["status"] == "approved"]),
+            "pending_review": len([r for r in all_rbs if r["status"] == "pending_review"]),
+            "rejected": len([r for r in all_rbs if r["status"] == "rejected"]),
+            "manual": len([r for r in all_rbs if r["source"] == "manual"]),
+            "agent_generated": len([r for r in all_rbs if r["source"] == "agent_generated"]),
+        }
+
+    @app.get("/api/runbooks/{rb_id}")
+    def get_runbook(rb_id: str):
+        """获取单个 runbook 详情"""
+        rb = store.get_runbook(rb_id)
+        if not rb:
+            return JSONResponse(status_code=404, content={"detail": "runbook not found"})
+        # 不返回 embedding (太大)
+        rb.pop("embedding", None)
+        return rb
+
+    @app.post("/api/runbooks")
+    def create_runbook(rb: dict):
+        """新增 runbook (手动添加, 默认 approved)"""
+        if not rb.get("title") or not rb.get("content"):
+            return JSONResponse(status_code=400, content={"detail": "title and content required"})
+        rb.setdefault("source", "manual")
+        rb.setdefault("status", "approved")
+        rb.setdefault("updated_by", "web-user")
+        rid = store.upsert_runbook(rb)
+        return {"id": rid, "status": "created"}
+
+    @app.put("/api/runbooks/{rb_id}")
+    def update_runbook(rb_id: str, rb: dict):
+        """更新 runbook (内容修改后需重新编码 embedding)"""
+        rb["id"] = rb_id
+        rb.setdefault("updated_by", "web-user")
+        # 如果 title/content/tags 变了, 清除 embedding 以便重新编码
+        existing = store.get_runbook(rb_id)
+        if existing:
+            if (existing.get("title") != rb.get("title") or
+                existing.get("content") != rb.get("content") or
+                existing.get("tags") != rb.get("tags", existing.get("tags"))):
+                # 清除旧 embedding (置 NULL, 非空 bytes), ensure_embeddings 会重新编码
+                store.update_runbook_embedding(rb_id, None)
+        store.upsert_runbook(rb)
+        return {"id": rb_id, "status": "updated"}
+
+    @app.delete("/api/runbooks/{rb_id}")
+    def delete_runbook(rb_id: str):
+        """删除 runbook"""
+        store.delete_runbook(rb_id)
+        return {"id": rb_id, "status": "deleted"}
+
+    @app.post("/api/runbooks/{rb_id}/review")
+    def review_runbook(rb_id: str, decision: dict):
+        """审核 runbook: pending_review -> approved / rejected"""
+        status = decision.get("status", "rejected")
+        reviewer = decision.get("decided_by", "web-user")
+        if status not in ("approved", "rejected"):
+            return JSONResponse(status_code=400, content={"detail": "status must be approved or rejected"})
+        store.review_runbook(rb_id, status, reviewer)
+        # 审核通过后, 触发 embedding 编码 (异步, 不阻塞响应)
+        if status == "approved":
+            try:
+                import importlib
+                kb_module = importlib.import_module("src.kb")
+                kb_module.ensure_embeddings(store)
+            except Exception as e:
+                # embedding 编码失败不影响审核, 首次 search_kb 时会重试
+                pass
+        return {"id": rb_id, "status": status, "reviewer": reviewer}
 
     # ---- WebSocket ----
 

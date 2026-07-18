@@ -5,11 +5,12 @@ import {
 } from 'antd'
 import {
   RobotOutlined, SafetyOutlined, BellOutlined, UserOutlined,
-  BulbFilled, BulbOutlined, LogoutOutlined,
+  BulbFilled, BulbOutlined, LogoutOutlined, BookOutlined,
 } from '@ant-design/icons'
 import AgentActivity from './components/AgentActivity'
 import ApprovalCenter from './components/ApprovalCenter'
 import RiskRules from './components/RiskRules'
+import KnowledgeBase from './components/KnowledgeBase'
 import './App.css'
 
 const { Sider, Header, Content } = Layout
@@ -85,6 +86,7 @@ function App() {
     { key: 'agent', icon: <RobotOutlined />, label: 'Agent 活动台' },
     { key: 'approval', icon: <SafetyOutlined />, label: '审批中心' },
     { key: 'rules', icon: <BulbOutlined />, label: '风险规则' },
+    { key: 'kb', icon: <BookOutlined />, label: '知识库' },
   ]
   const currentLabel = menuItems.find(m => m.key === tab)?.label || ''
 
@@ -176,6 +178,12 @@ function App() {
               display: tab === 'rules' ? 'block' : 'none',
             }}>
               <RiskRules />
+            </div>
+            <div style={{
+              position: 'absolute', inset: 0,
+              display: tab === 'kb' ? 'block' : 'none',
+            }}>
+              <KnowledgeBase />
             </div>
           </Content>
         </Layout>

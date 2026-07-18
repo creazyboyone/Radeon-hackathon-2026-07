@@ -3,3 +3,6 @@ fastapi>=0.104
 uvicorn>=0.24
 websockets>=12
 wsproto>=1.2
+# M5 知识库向量检索 (可选, 缺失自动降级为 BM25)
+# 安装后首次使用会自动下载 bge-small-zh 模型 (~100MB)
+sentence-transformers>=2.7

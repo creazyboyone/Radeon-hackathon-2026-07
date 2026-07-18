@@ -31,6 +31,21 @@ RISK_MEDIUM = "medium"
 RISK_HIGH = "high"
 RISK_DESTRUCTIVE = "destructive"
 
+# ---- 全局 Store 引用 (M5: search_kb / write_runbook 需要访问 DB) ----
+# 由 main.py / orchestrator.py 启动时注入, 工具函数通过 _get_store() 获取
+_store_ref = None
+
+
+def set_store(store):
+    """注入 Store 实例 (启动时调用一次)"""
+    global _store_ref
+    _store_ref = store
+
+
+def _get_store():
+    """获取已注入的 Store 实例"""
+    return _store_ref
+
 # ---- 工具定义 (给 LLM 的 function schema) ----
 TOOL_DEFINITIONS = [
     {
@@ -150,6 +165,23 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_runbook",
+            "description": "解决故障后将经验回写为运维知识库runbook(学习闭环). 高置信度的成功修复自动写入, 待人工审核后生效. 避免重复排查相同问题",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "runbook标题, 简明描述故障场景, 如 'DataNode OOM 崩溃修复'"},
+                    "content": {"type": "string", "description": "runbook内容: 包含症状/排查步骤/根因/修复方法/验证方式, 用结构化文本描述"},
+                    "tags": {"type": "string", "description": "标签(逗号分隔), 如 'hdfs,datanode,oom', 便于检索分类"},
+                    "confidence": {"type": "number", "description": "置信度0-1, 1=非常确定修复有效, 0.5=不确定. 低于0.7会被拒绝写入"},
+                },
+                "required": ["title", "content", "confidence"],
+            },
+        },
+    },
 ]
 
 # ---- 风险映射 (fallback, classify 优先用 DB risk_rules) ----
@@ -162,6 +194,7 @@ TOOL_RISK = {
     "restart_service": RISK_HIGH,
     "hdfs_admin": RISK_LOW,
     "edit_remote_config": RISK_MEDIUM,
+    "write_runbook": RISK_LOW,   # M5: 只写DB, 不影响集群, 低危
 }
 
 TOOL_HANDLERS = {}
@@ -481,7 +514,55 @@ def _read_logs(service="", filter="", tail_n=50, node=""):
 
 @tool("search_kb")
 def _search_kb(query=""):
-    """检索运维知识库 — 当前简单关键词匹配, 后续接入 sqlite-vec 向量检索"""
+    """检索运维知识库 — M5: 向量检索(bge-small) + BM25(FTS5) 混合检索
+
+    优先使用语义向量检索 (bge-small-zh CPU), 降级为 BM25 关键词匹配。
+    返回 approved 状态的 runbook, 含标题/内容/标签/匹配分数。
+    """
+    store = _get_store()
+    if store is None:
+        # store 未注入 (如单元测试), 退回静态 mock 数据
+        return _search_kb_static(query)
+
+    # 懒加载: 首次调用时确保所有 runbook 有 embedding
+    try:
+        from . import kb
+        kb.ensure_embeddings(store)
+        results = kb.hybrid_search(store, query, limit=5)
+    except Exception as e:
+        logger.warning(f"search_kb hybrid search failed ({e}), fallback to FTS")
+        results = store.search_runbooks_fts(query, limit=5)
+
+    if not results:
+        return {
+            "query": query,
+            "matches": 0,
+            "results": [],
+            "message": "知识库中未找到相关条目",
+        }
+
+    # 精简返回 (content 截断, 避免占用过多 context)
+    simplified = []
+    for r in results:
+        content = r.get("content", "")
+        simplified.append({
+            "title": r["title"],
+            "content": content[:500] + ("..." if len(content) > 500 else ""),
+            "tags": r.get("tags", ""),
+            "score": r.get("score", 0),
+            "match_type": r.get("match_type", ""),
+        })
+
+    return {
+        "query": query,
+        "matches": len(simplified),
+        "results": simplified,
+        "search_mode": "hybrid" if any(r.get("match_type") == "vector" for r in results) else "bm25",
+    }
+
+
+def _search_kb_static(query=""):
+    """静态 mock 数据 (store 未注入时的兜底, 仅用于单元测试)"""
     _kb = [
         {"title": "DataNode OOM 修复runbook",
          "content": "DataNode OOM 崩溃修复步骤: 1.检查DataNode日志确认OOM "
@@ -492,21 +573,58 @@ def _search_kb(query=""):
          "content": "NameNode GC overhead 原因: 1.堆内存不足 2.小文件过多 3.GC策略不当. "
                     "排查: jstat -gcutil 查看GC频率, 检查hdfs count看文件数. "
                     "修复: 调大NameNode堆内存, 启用G1GC, 清理小文件"},
-        {"title": "YARN NodeManager 掉线排查",
-         "content": "NodeManager掉线原因: 1.进程崩溃(OOM) 2.网络不通 3.磁盘满. "
-                    "排查: yarn node -list确认状态, 查NodeManager日志. "
-                    "修复: 重启NodeManager, 检查nodemanager.local-dirs磁盘空间"},
-        {"title": "HDFS 磁盘满处理",
-         "content": "磁盘满处理: 1.df -h确认 2.清理临时文件/日志 "
-                    "3.必要时扩容. 注意: 不要直接删HDFS数据块, 用hdfs balancer重平衡"},
-        {"title": "ZooKeeper 连接超时排查",
-         "content": "ZK连接超时: 1.检查ZK服务状态 2.检查网络 3.检查sessionTimeout配置 "
-                    "4.检查客户端连接数. 修复: 重启异常ZK节点, 调大tickTime/sessionTimeout"},
     ]
     results = [kb for kb in _kb
                if any(w in kb["title"] or w in kb["content"]
                       for w in query.split())]
-    return {"query": query, "matches": len(results), "results": results}
+    return {"query": query, "matches": len(results), "results": results,
+            "search_mode": "static_fallback"}
+
+
+@tool("write_runbook")
+def _write_runbook(title="", content="", tags="", confidence=1.0, session_id=""):
+    """M5 学习闭环 — 将修复经验回写为知识库 runbook
+
+    置信度门控: confidence < 0.7 拒绝写入 (防止错误经验污染知识库)
+    agent 回写的 runbook 状态为 pending_review, 需人工审核后生效
+    """
+    store = _get_store()
+    if store is None:
+        return {"error": "知识库未初始化 (store 未注入)"}
+
+    # 置信度门控 (§14.2: 防止错误经验被记住污染 KB)
+    CONFIDENCE_THRESHOLD = 0.7
+    if confidence < CONFIDENCE_THRESHOLD:
+        return {
+            "error": f"置信度 {confidence} 低于阈值 {CONFIDENCE_THRESHOLD}, 拒绝写入",
+            "rejected": True,
+            "message": "修复置信度不足, 建议人工确认后手动添加",
+        }
+
+    # 参数校验
+    if not title.strip() or not content.strip():
+        return {"error": "title 和 content 不能为空"}
+
+    # 写入 (source=agent_generated, status=pending_review)
+    rb_id = store.upsert_runbook({
+        "title": title,
+        "content": content,
+        "tags": tags,
+        "source": "agent_generated",
+        "status": "pending_review",
+        "session_id": session_id,
+        "confidence": confidence,
+        "updated_by": f"agent:{session_id}" if session_id else "agent",
+    })
+
+    return {
+        "id": rb_id,
+        "title": title,
+        "status": "pending_review",
+        "confidence": confidence,
+        "message": f"runbook 已写入知识库 (待人工审核), id={rb_id}",
+        "hint": "可在 Web 控制台 > 知识库管理 中审核此条目",
+    }
 
 
 @tool("restart_service")
@@ -686,7 +804,8 @@ AUTO_TOOL_NAMES = [
     "get_service_status", "get_alerts", "get_metrics",
     "read_logs", "search_kb", "hdfs_admin",
 ]
-FIX_TOOL_NAMES = AUTO_TOOL_NAMES + ["restart_service", "edit_remote_config"]
+# M5: fix 模式增加 write_runbook, 修复成功后可回写经验
+FIX_TOOL_NAMES = AUTO_TOOL_NAMES + ["restart_service", "edit_remote_config", "write_runbook"]
 
 
 def get_tool_definitions(names):

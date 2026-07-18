@@ -322,6 +322,9 @@ class Guardrail:
 
     def _do_execute(self, tool_name, args, tier, session_id):
         """执行工具 + 记录审计"""
+        # M5: write_runbook 需要关联 session_id (用于追溯回写来源)
+        if tool_name == "write_runbook" and session_id:
+            args = {**args, "session_id": session_id}
         result = execute_tool(tool_name, args)
         self._audit(session_id, tool_name, args, "executed", tier, result)
         return result

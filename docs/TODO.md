@@ -15,7 +15,7 @@
 | M4 安全护栏（初版） | ✅ 完成 | 风险分级 / dry-run / 审批 / 审计 / 熔断 |
 | 缺陷修复轮次 | ✅ 完成 | 7 项核心缺陷 + 20 项静态审查 |
 | §21 安全护栏**重设计** | ✅ 完成 | 双轴+四档+DB规则+attempt节流（T1–T8 已落地，含评审修复） |
-| M5 知识库 + 学习闭环 | ⬜ 待做 | sqlite-vec / write_runbook |
+| M5 知识库 + 学习闭环 | ✅ 完成 | sqlite-vec(降级FTS5) / write_runbook / 审核流程 |
 | M6 Web 控制台 | ✅ 完成 | 后端+前端；Grafana 嵌入 / admin 美化待补 |
 | M7 演示与提交 | ⬜ 待做 | 多剧本 / 录屏 / README / 性能数据 |
 
@@ -74,12 +74,25 @@
 - [x] **T7.** Web API + 管理页面：`risk_rules` CRUD + 管理面"风险规则"页（irreversible 档禁勾 autonomous，后端双重强制）
 - [x] **T8.** 联调修复：熔断改类级跨会话共享；`_refine_restart` 加 10s 缓存；无人值守 DOWN 自动重启重试 / irreversible 拒绝并升级告警
 
+### M5 — 知识库 + 学习闭环 ✅
+- [x] `runbooks` 表 + FTS5 全文索引 + 触发器同步 (db.py)
+- [x] 种子数据 6 条 runbook (DataNode OOM / NameNode GC / NodeManager 掉线 / 磁盘满 / ZK 超时 / NameNode SIGTERM)
+- [x] `kb.py`: bge-small-zh 嵌入模型 (CPU, 懒加载) + numpy 余弦相似度向量检索
+- [x] 混合检索: 向量 top-k + BM25 top-k 合并去重, 向量优先; 缺 bge 自动降级 BM25
+- [x] `search_kb` 工具重写: 接入混合检索, content 截断防 context 膨胀
+- [x] `write_runbook` 工具: 置信度门控 (<0.7 拒绝) + pending_review 状态 + session_id 关联
+- [x] `guardrails.py`: write_runbook session_id 注入 + 低危自动执行
+- [x] Web API: runbooks CRUD + `/review` 审核接口 + `/search` 检索测试 + `/stats` 统计
+- [x] Web 前端: 知识库管理页面 (统计卡片 / 检索测试 / 列表 / 审核 / CRUD)
+- [x] `agent.py` 学习闭环: fix 模式修复成功后自动提示回写 runbook (检测修复关键词 + 未调用 write_runbook)
+- [x] FIX_PROMPT 更新: 引导 agent 修复成功后调用 write_runbook
+- [x] 测试: `tests/test_m5_kb.py` 验证 DB/FTS/CRUD/write_runbook/审核/置信度门控
+
 ---
 
 ## 二、待做 — 其他领域
 
 - [ ] **T9. 演示与提交（M7）** — 多故障剧本跑通 / 端到端录屏 / README 复现步骤+架构图 / 性能数据
-- [ ] **M5. 知识库 + 学习闭环** — sqlite-vec + bge-small(CPU) 检索 / `write_runbook` 回写 + 人工审核
 - [ ] **M6 补** — 集群状态嵌 Grafana / 前端 admin 模板美化
 - [ ] **环境** — 切 docker-compose（Apache Hadoop + Prometheus + Alertmanager + Grafana），可复现供评委
 
