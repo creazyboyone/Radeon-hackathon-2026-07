@@ -893,7 +893,7 @@ SELECT COUNT(*) FROM audit_log
 ### 21.6 与现有机制关系
 
 - `AUTO_APPROVE`（`config.py`）演进为 `AUTONOMY` 模式（supervised/autonomous），语义更清晰。
-- `Guardrail` 现有 `auto_approve` 参数 = `AUTONOMY=='supervised'` 时 False。
+- `Guardrail` 构造参数从 `auto_approve: bool` 改为 `autonomy: str`；三个 `_exec_*` 分支用 `self.autonomy` 决策（而非规则的 `autonomous` 标志），避免 autonomous 模式下规则禁止时误入审批阻塞。
 - `RISK_DESTRUCTIVE` 在 `tools.py`/`guardrails.py` 已定义却从未使用 → 本方案正式接入为 `irreversible` 档。
 - 现有熔断（`max_failures`/`cooldown`）保留作失败侧；attempt 节流作尝试侧。
 
