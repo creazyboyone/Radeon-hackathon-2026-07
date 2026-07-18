@@ -1,155 +1,331 @@
 """
-安全护栏 — 风险分级 + 审批门 + dry-run + 审计日志 + 熔断
+安全护栏 — §21 双轴四档分级自治 (替代原 §5/§9 初版)
 
-设计文档第 5/9 节:
-  低危(只读)      → 自动执行
-  中危(可回滚)    → 执行 + 事后通知
-  高危(影响可用性) → dry-run预览 + 审批门 + 熔断检查
-  破坏性(不可逆)  → dry-run + 必须审批 + 备份
+轴1 AUTONOMY (config): supervised (人工审批) / autonomous (无人值守)
+轴2 tier (classify):    low / medium / recover / reversible / irreversible
 
-Console 模式: 高危操作打印警告后自动批准
-Web 模式(后续): 高危操作通过 WebSocket 等人工审批
+定级权归规则(DB), 不归模型。模型只选工具 + 给理由, 理由不参与定级。
+fail-closed: 未知工具一律 irreversible + 不可自动执行。
 """
 import json
 import time
 import uuid
 import logging
 
-from .tools import execute_tool, TOOL_RISK, SERVICE_MAP
+from .tools import execute_tool, cm_get, CM_CLUSTER, SERVICE_MAP
 
 logger = logging.getLogger(__name__)
 
-RISK_LOW = "low"
-RISK_MEDIUM = "medium"
-RISK_HIGH = "high"
-RISK_DESTRUCTIVE = "destructive"
+# ---- 档位常量 ----
+TIER_LOW = "low"
+TIER_MEDIUM = "medium"
+TIER_RECOVER = "recover"
+TIER_REVERSIBLE = "reversible"
+TIER_IRREVERSIBLE = "irreversible"
 
 
 class Guardrail:
-    """安全护栏 — 包装工具执行，所有高危操作经过审批/熔断/审计"""
+    """§21 安全护栏 — 双轴四档分级自治"""
 
-    def __init__(self, store, auto_approve=True):
+    def __init__(self, store, autonomy="supervised"):
         self.store = store
-        self.auto_approve = auto_approve  # console 模式自动批准
-        # 熔断状态
-        self._failure_counts = {}      # {service: count}
-        self._last_failure_ts = {}     # {service: timestamp}
-        self.max_failures = 3          # 连续失败阈值
-        self.cooldown = 300            # 冷却时间(秒)
+        self.autonomy = autonomy  # "supervised" / "autonomous"
+        # 熔断 (失败侧, §9 保留)
+        self._failure_counts = {}
+        self._last_failure_ts = {}
+        self.max_failures = 3
+        self.circuit_cooldown = 300
+        # attempt 节流 (尝试侧, §21.5)
+        self.max_attempts = 2
+        self.attempt_cooldown = 60   # 两次自动执行最小间隔
+        self.attempt_window = 600   # 观察窗口 10min
+        # classify 缓存 (§21.3 TTL)
+        self._rules_cache = {"data": None, "ts": 0}
+        self._rules_cache_ttl = 30  # 30s 缓存
+
+    # ============================================================
+    # §21.3 classify — 纯规则 + DB + fail-closed
+    # ============================================================
+
+    def classify(self, tool_name, args):
+        """定级: 查 risk_rules -> match_json 命中 -> 运行时精炼 -> fail-closed
+
+        Returns: (tier, autonomous_allowed)
+        """
+        rules = self._get_rules_cached()
+        tier, autonomous = self._match_rules(rules, tool_name, args)
+
+        # §21.4 运行时精炼 (restart_service: 检查角色状态)
+        if tool_name == "restart_service" and tier == TIER_RECOVER:
+            tier, autonomous = self._refine_restart(args, tier, autonomous)
+
+        # supervised 模式下所有高危档都需人工
+        if self.autonomy == "supervised" and tier not in (TIER_LOW, TIER_MEDIUM):
+            autonomous = False
+
+        return tier, autonomous
+
+    def _get_rules_cached(self):
+        """从 DB 读取 risk_rules, 带 TTL 缓存"""
+        now = time.time()
+        if self._rules_cache["data"] is not None and now - self._rules_cache["ts"] < self._rules_cache_ttl:
+            return self._rules_cache["data"]
+        rules = self.store.get_risk_rules(enabled_only=True)
+        self._rules_cache["data"] = rules
+        self._rules_cache["ts"] = now
+        return rules
+
+    def _match_rules(self, rules, tool_name, args):
+        """匹配规则: tool_name 命中 + match_json 命中, 取 priority 最高"""
+        best = None
+        for r in rules:
+            if r["tool_name"] != tool_name and r["tool_name"] != "*":
+                continue
+            if r["match_json"]:
+                if not self._match_json(r["match_json"], args):
+                    continue
+            if best is None or r["priority"] > best["priority"]:
+                best = r
+        if best:
+            return best["tier"], bool(best["autonomous"])
+        # fail-closed: 未知工具
+        return TIER_IRREVERSIBLE, False
+
+    @staticmethod
+    def _match_json(match_spec, args):
+        """检查 args 是否满足 match_json 条件 (所有 key-value 匹配)"""
+        if not isinstance(match_spec, dict):
+            return True
+        for k, v in match_spec.items():
+            if args.get(k) != v:
+                return False
+        return True
+
+    def _refine_restart(self, args, tier, autonomous):
+        """§21.4 运行时精炼: restart_service 时检查角色状态
+
+        - STOPPED/DOWN/UNKNOWN → 维持 recover (重启不会更糟)
+        - RUNNING 但不健康 → 降为 irreversible (不主动制造中断)
+        """
+        svc = args.get("service", "")
+        svc_info = SERVICE_MAP.get(svc, {})
+        cm_svc = svc_info.get("cm_service", "")
+        role_type = svc_info.get("cm_role_type", "")
+        if not cm_svc:
+            return tier, autonomous
+
+        data = cm_get(f"/clusters/{CM_CLUSTER}/services/{cm_svc}/roles")
+        target_node = args.get("node", "")
+        for role in data.get("items", []):
+            if role.get("type") != role_type:
+                continue
+            if target_node:
+                from .tools import _resolve_hostname
+                hostname = _resolve_hostname(role.get("hostRef", {}))
+                if hostname != target_node:
+                    continue
+            state = role.get("roleState", "UNKNOWN")
+            if state in ("STOPPED", "DOWN", "UNKNOWN"):
+                continue  # 维持 recover
+            # RUNNING 但不健康 → 不主动制造中断
+            return TIER_IRREVERSIBLE, False
+        return tier, autonomous
+
+    # ============================================================
+    # §21.4 execute — 四档分支
+    # ============================================================
 
     def execute(self, tool_name, args, session_id=""):
-        """安全执行工具 — 经过风险分级 / dry-run / 审批 / 审计 / 熔断"""
-        risk = self._assess_risk(tool_name, args)
+        """安全执行工具 — classify 定级 → 四档分支执行"""
+        tier, autonomous = self.classify(tool_name, args)
+        self._audit(session_id, tool_name, args, "classified", tier,
+                     {"tier": tier, "autonomous": autonomous, "autonomy": self.autonomy})
+        print(f"  [GUARDRAIL] {tool_name} tier={tier} autonomous={autonomous} autonomy={self.autonomy}")
 
-        # 审计: 记录调用意图
-        self._audit(session_id, tool_name, args, "requested", risk)
-        print(f"  [GUARDRAIL] {tool_name} risk={risk}")
+        if tier in (TIER_LOW, TIER_MEDIUM):
+            return self._exec_low_medium(tool_name, args, tier, session_id)
 
-        if risk == RISK_LOW:
-            return self._do_execute(tool_name, args, risk, session_id)
+        if tier == TIER_RECOVER:
+            return self._exec_recover(tool_name, args, tier, session_id, autonomous)
 
-        elif risk == RISK_MEDIUM:
-            result = self._do_execute(tool_name, args, risk, session_id)
+        if tier == TIER_REVERSIBLE:
+            return self._exec_reversible(tool_name, args, tier, session_id, autonomous)
+
+        if tier == TIER_IRREVERSIBLE:
+            return self._exec_irreversible(tool_name, args, tier, session_id, autonomous)
+
+        # 不该到这里
+        return self._exec_irreversible(tool_name, args, TIER_IRREVERSIBLE, session_id, False)
+
+    def _exec_low_medium(self, tool_name, args, tier, session_id):
+        """低危/中危: 直接执行, 中危事后通知"""
+        result = self._do_execute(tool_name, args, tier, session_id)
+        if tier == TIER_MEDIUM:
             self._notify(f"[MEDIUM] {tool_name}({args.get('service', '')}) "
                          f"executed, result={result.get('result', 'ok')}")
-            return result
-
-        else:  # high or destructive
-            svc = args.get("service", "")
-
-            # 1. 熔断检查
-            if self._is_circuit_broken(svc):
-                msg = (f"熔断: {svc} 连续失败 {self._failure_counts.get(svc, 0)} 次, "
-                       f"已升级人工处理")
-                self._audit(session_id, tool_name, args, "circuit_broken", risk)
-                logger.warning(msg)
-                print(f"  [GUARDRAIL] ⚠️ {msg}")
-                return {"error": msg, "circuit_broken": True}
-
-            # 2. dry-run 预览
-            dry_run = self._dry_run(tool_name, args)
-            self._audit(session_id, tool_name, args, "dry_run_preview", risk, dry_run)
-            print(f"  [GUARDRAIL] dry-run: {dry_run.get('message', '')}")
-
-            # 3. 审批门
-            approval = self._request_approval(
-                session_id, tool_name, args, risk, dry_run)
-            if approval["status"] != "approved":
-                self._audit(session_id, tool_name, args, "rejected", risk,
-                            approval)
-                print(f"  [GUARDRAIL] 审批未通过")
-                return {"error": "审批未通过", "approval": approval}
-            print(f"  [GUARDRAIL] 审批通过 ({approval.get('decided_by', '')})")
-
-            # 4. 执行
-            result = self._do_execute(tool_name, args, risk, session_id)
-
-            # 5. 熔断计数
-            if self._is_failed(result):
-                self._increment_failure(svc)
-                count = self._failure_counts.get(svc, 0)
-                self._notify(f"[HIGH] {tool_name}({svc}) 执行失败, "
-                             f"连续失败 {count}/{self.max_failures}")
-                if count >= self.max_failures:
-                    self._notify(f"[ALERT] 熔断触发: {svc} 连续失败 {count} 次, "
-                                 f"后续操作将升级人工处理")
-            else:
-                self._reset_failure(svc)
-
-            return result
-
-    # ---- 执行 + 审计 ----
-
-    def _do_execute(self, tool_name, args, risk, session_id):
-        """执行工具 + 记录审计"""
-        result = execute_tool(tool_name, args)
-        self._audit(session_id, tool_name, args, "executed", risk, result)
         return result
 
-    # ---- 风险评估 ----
+    def _exec_recover(self, tool_name, args, tier, session_id, autonomous):
+        """recover: 可恢复幂等操作 (如重启已 DOWN 服务)
 
-    def _assess_risk(self, tool_name, args):
-        """双层风险判定: 静态规则(权威) + 服务属性"""
-        base = TOOL_RISK.get(tool_name, RISK_LOW)
-        if tool_name == "restart_service":
-            svc = args.get("service", "")
-            svc_info = SERVICE_MAP.get(svc, {})
-            return RISK_HIGH if svc_info.get("core") else RISK_MEDIUM
-        return base
+        autonomous: attempt 节流 → 自动执行
+        supervised: 走审批门 → 等人工
+        """
+        svc = args.get("service", "")
 
-    # ---- dry-run ----
+        # 熔断检查 (§9 保留)
+        if self._is_circuit_broken(svc):
+            msg = f"熔断: {svc} 连续失败 {self._failure_counts.get(svc, 0)} 次, 已升级人工处理"
+            self._audit(session_id, tool_name, args, "circuit_broken", tier)
+            logger.warning(msg)
+            return {"error": msg, "circuit_broken": True}
+
+        if autonomous:
+            # §21.5 attempt 节流
+            blocked = self._check_attempt_throttle(tool_name, svc)
+            if blocked:
+                self._audit(session_id, tool_name, args, "attempt_throttled", tier, blocked)
+                return blocked
+        else:
+            # supervised: 走审批门
+            approval = self._request_approval(session_id, tool_name, args, tier,
+                                               self._dry_run(tool_name, args))
+            if approval["status"] != "approved":
+                self._audit(session_id, tool_name, args, "rejected", tier, approval)
+                return {"error": "审批未通过", "approval": approval}
+
+        # 执行
+        result = self._do_execute(tool_name, args, tier, session_id)
+
+        # 熔断计数 + attempt 节流副作用
+        if self._is_failed(result):
+            self._increment_failure(svc)
+            count = self._failure_counts.get(svc, 0)
+            self._notify(f"[RECOVER] {tool_name}({svc}) 执行失败, "
+                         f"连续失败 {count}/{self.max_failures}")
+            if count >= self.max_failures:
+                self._notify(f"[ALERT] 熔断触发: {svc} 连续失败 {count} 次, "
+                             f"后续操作将升级人工处理")
+        else:
+            self._reset_failure(svc)
+        return result
+
+    def _exec_reversible(self, tool_name, args, tier, session_id, autonomous):
+        """reversible: 可回撤操作 (先备份→改→reload)
+
+        autonomous: 自动执行但强制先备份
+        supervised: 走审批门
+        """
+        svc = args.get("service", "")
+
+        if not autonomous:
+            approval = self._request_approval(session_id, tool_name, args, tier,
+                                               self._dry_run(tool_name, args))
+            if approval["status"] != "approved":
+                self._audit(session_id, tool_name, args, "rejected", tier, approval)
+                return {"error": "审批未通过", "approval": approval}
+        else:
+            blocked = self._check_attempt_throttle(tool_name, svc)
+            if blocked:
+                self._audit(session_id, tool_name, args, "attempt_throttled", tier, blocked)
+                return blocked
+
+        result = self._do_execute(tool_name, args, tier, session_id)
+        if self._is_failed(result):
+            self._increment_failure(svc)
+        else:
+            self._reset_failure(svc)
+        return result
+
+    def _exec_irreversible(self, tool_name, args, tier, session_id, autonomous):
+        """irreversible: 不可逆操作
+
+        autonomous: 直接放弃 + 升级告警 (不傻等超时)
+        supervised: 走审批门, 超时=拒绝
+        """
+        svc = args.get("service", "")
+
+        if not autonomous:
+            approval = self._request_approval(session_id, tool_name, args, tier,
+                                               self._dry_run(tool_name, args))
+            if approval["status"] != "approved":
+                self._audit(session_id, tool_name, args, "rejected", tier, approval)
+                return {"error": "审批未通过", "approval": approval}
+            return self._do_execute(tool_name, args, tier, session_id)
+        else:
+            msg = (f"[IRREVERSIBLE] {tool_name}({svc}) 属不可逆操作, "
+                   f"autonomous 模式下拒绝自动执行, 已升级告警")
+            self._audit(session_id, tool_name, args, "auto_rejected", tier)
+            self._notify(msg)
+            logger.warning(msg)
+            return {"error": "不可逆操作, autonomous 模式拒绝", "escalated": True}
+
+    # ============================================================
+    # §21.5 attempt 节流 (尝试侧, 与熔断互补)
+    # ============================================================
+
+    def _check_attempt_throttle(self, tool_name, target):
+        """检查 attempt 节流: 观察窗口内执行次数 + 冷却间隔
+
+        Returns: {"error": ..., "throttled": True} 或 None (允许)
+        """
+        count, last_ts = self.store.count_audit_attempts(
+            tool_name, target, self.attempt_window)
+
+        if count >= self.max_attempts:
+            msg = (f"attempt 节流: {tool_name}({target}) 在 {self.attempt_window}s 内"
+                   f"已执行 {count}/{self.max_attempts} 次, 升级人工处理")
+            logger.warning(msg)
+            return {"error": msg, "throttled": True, "escalated": True}
+
+        if last_ts and time.time() - last_ts < self.attempt_cooldown:
+            remaining = int(self.attempt_cooldown - (time.time() - last_ts))
+            msg = (f"attempt 冷却: {tool_name}({target}) 上次执行 "
+                   f"{int(time.time()-last_ts)}s 前, 需等待 {remaining}s")
+            return {"error": msg, "throttled": True, "cooldown_remaining": remaining}
+
+        return None
+
+    # ============================================================
+    # 通用: 执行 + 审计 + 审批 + 熔断 + dry-run
+    # ============================================================
+
+    def _do_execute(self, tool_name, args, tier, session_id):
+        """执行工具 + 记录审计"""
+        result = execute_tool(tool_name, args)
+        self._audit(session_id, tool_name, args, "executed", tier, result)
+        return result
 
     def _dry_run(self, tool_name, args):
-        """dry-run 预览: 返回"会发生什么"而不真执行"""
+        """dry-run 预览"""
+        svc = args.get("service", "")
+        node = args.get("node", "")
+        svc_info = SERVICE_MAP.get(svc, {})
+        nodes = [node] if node else svc_info.get("nodes", [])
         if tool_name == "restart_service":
-            svc = args.get("service", "")
-            node = args.get("node", "")
-            svc_info = SERVICE_MAP.get(svc, {})
-            nodes = [node] if node else svc_info.get("nodes", [])
-            risk = RISK_HIGH if svc_info.get("core") else RISK_MEDIUM
             return {
                 "tool": tool_name,
                 "action": f"CM API commands/start → 启动 {svc}",
                 "target_nodes": nodes,
-                "risk_level": risk,
+                "tier": TIER_RECOVER,
                 "reversible": True,
                 "impact": "仅启动 STOPPED 角色, 不影响运行中的",
                 "message": f"将启动 {svc} (nodes={nodes}) via CM API",
             }
-        return {
-            "tool": tool_name,
-            "message": f"dry-run preview for {tool_name}",
-        }
+        if tool_name == "edit_remote_config":
+            return {
+                "tool": tool_name,
+                "action": f"备份 → 修改 {args.get('file', '')} → reload {svc}",
+                "tier": TIER_REVERSIBLE,
+                "reversible": True,
+                "impact": "修改前自动备份 .bak.<ts>, 可回滚",
+                "message": f"将修改 {args.get('file', '')} 并 reload {svc}",
+            }
+        return {"tool": tool_name, "tier": TIER_IRREVERSIBLE,
+                "message": f"dry-run preview for {tool_name}"}
 
-    # ---- 审批门 ----
-
-    def _request_approval(self, session_id, tool_name, args,
-                          risk, dry_run, timeout=300):
-        """请求审批 — 记录到 DB。
-
-        console 模式 (auto_approve=True): 立即自动批准
-        Web 模式 (auto_approve=False): 阻塞轮询 DB 等待人工审批, 超时自动拒绝
-        """
+    def _request_approval(self, session_id, tool_name, args, tier, dry_run, timeout=600):
+        """请求审批 — supervised 模式阻塞等待人工审批"""
         approval_id = str(uuid.uuid4())[:8]
         with self.store.lock:
             self.store.conn.execute(
@@ -157,59 +333,43 @@ class Guardrail:
                 "risk_level,dry_run_json,status,ts) "
                 "VALUES(?,?,?,?,?,?,?,?)",
                 (approval_id, session_id, tool_name,
-                 json.dumps(args, ensure_ascii=False), risk,
+                 json.dumps(args, ensure_ascii=False), tier,
                  json.dumps(dry_run, ensure_ascii=False),
                  "pending", int(time.time()))
             )
             self.store.conn.commit()
 
-        if self.auto_approve:
-            self._decide_approval(approval_id, "approved",
-                                 "auto-approve(console)")
-            return {"id": approval_id, "status": "approved",
-                    "decided_by": "auto-approve(console)"}
-        else:
-            # Web 模式: 阻塞轮询 DB 等待人工审批
-            poll_interval = 2
-            waited = 0
-            while waited < timeout:
-                with self.store.lock:
-                    row = self.store.conn.execute(
-                        "SELECT status, decided_by FROM approvals WHERE id=?",
-                        (approval_id,)
-                    ).fetchone()
-                if row and row[0] != "pending":
-                    return {"id": approval_id, "status": row[0],
-                            "decided_by": row[1] or ""}
-                time.sleep(poll_interval)
-                waited += poll_interval
-            # 超时自动拒绝
-            self._decide_approval(approval_id, "rejected", "timeout")
-            return {"id": approval_id, "status": "rejected",
-                    "decided_by": "timeout",
-                    "message": "审批超时, 已自动拒绝"}
-
-    def _decide_approval(self, approval_id, status, decided_by):
-        """更新审批状态"""
+        poll_interval = 2
+        waited = 0
+        while waited < timeout:
+            with self.store.lock:
+                row = self.store.conn.execute(
+                    "SELECT status, decided_by FROM approvals WHERE id=?",
+                    (approval_id,)
+                ).fetchone()
+            if row and row[0] != "pending":
+                return {"id": approval_id, "status": row[0],
+                        "decided_by": row[1] or ""}
+            time.sleep(poll_interval)
+            waited += poll_interval
         with self.store.lock:
             self.store.conn.execute(
-                "UPDATE approvals SET status=?, decided_by=?, decided_at=? "
-                "WHERE id=?",
-                (status, decided_by, int(time.time()), approval_id)
+                "UPDATE approvals SET status=?, decided_by=?, decided_at=? WHERE id=?",
+                ("rejected", "timeout", int(time.time()), approval_id)
             )
             self.store.conn.commit()
+        return {"id": approval_id, "status": "rejected",
+                "decided_by": "timeout", "message": "审批超时, 已自动拒绝"}
 
-    # ---- 熔断 ----
+    # ---- 熔断 (§9 保留, 失败侧) ----
 
     def _is_circuit_broken(self, service):
-        """检查是否熔断: 连续失败 >= max_failures 且在冷却期内"""
         count = self._failure_counts.get(service, 0)
         if count >= self.max_failures:
             last_ts = self._last_failure_ts.get(service, 0)
-            if time.time() - last_ts < self.cooldown:
+            if time.time() - last_ts < self.circuit_cooldown:
                 return True
             else:
-                # 冷却期过后重置
                 self._failure_counts[service] = 0
                 self._last_failure_ts.pop(service, None)
         return False
@@ -232,21 +392,22 @@ class Guardrail:
                 return True
             if result.get("circuit_broken"):
                 return True
+            if result.get("throttled"):
+                return True
             r = result.get("result", "")
             return r in ("failed", "error", "unsupported")
         return False
 
     # ---- 审计日志 ----
 
-    def _audit(self, session_id, tool_name, args, status,
-               risk, result=None):
+    def _audit(self, session_id, tool_name, args, status, tier, result=None):
         """审计日志 — 每次工具调用写 SQLite"""
         with self.store.lock:
             self.store.conn.execute(
                 "INSERT INTO audit_log(session_id,tool_name,args_json,"
                 "risk_level,status,result_json,ts) VALUES(?,?,?,?,?,?,?)",
                 (session_id, tool_name,
-                 json.dumps(args, ensure_ascii=False), risk, status,
+                 json.dumps(args, ensure_ascii=False), tier, status,
                  json.dumps(result, ensure_ascii=False) if result else "",
                  int(time.time()))
             )
@@ -256,5 +417,4 @@ class Guardrail:
 
     @staticmethod
     def _notify(message):
-        """通知 — console 打印, 后续可接 webhook"""
         print(f"  [GUARDRAIL] {message}")

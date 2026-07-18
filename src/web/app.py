@@ -126,6 +126,28 @@ def create_app(store) -> FastAPI:
         from .tools import get_cluster_snapshot as snap
         return snap()
 
+    # ---- 风险规则 CRUD (§21.3 / T7) ----
+
+    @app.get("/api/risk_rules")
+    def list_risk_rules(enabled: str = ""):
+        return store.get_risk_rules(enabled_only=(enabled.lower() == "true"))
+
+    @app.post("/api/risk_rules")
+    def create_risk_rule(rule: dict):
+        rid = store.upsert_risk_rule(rule)
+        return {"id": rid, "status": "created"}
+
+    @app.put("/api/risk_rules/{rid}")
+    def update_risk_rule(rid: str, rule: dict):
+        rule["id"] = rid
+        store.upsert_risk_rule(rule)
+        return {"id": rid, "status": "updated"}
+
+    @app.delete("/api/risk_rules/{rid}")
+    def delete_risk_rule(rid: str):
+        store.delete_risk_rule(rid)
+        return {"id": rid, "status": "deleted"}
+
     # ---- WebSocket ----
 
     @app.websocket("/ws")

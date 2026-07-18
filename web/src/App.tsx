@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons'
 import AgentActivity from './components/AgentActivity'
 import ApprovalCenter from './components/ApprovalCenter'
+import RiskRules from './components/RiskRules'
 import './App.css'
 
 const { Sider, Header, Content } = Layout
@@ -83,6 +84,7 @@ function App() {
   const menuItems = [
     { key: 'agent', icon: <RobotOutlined />, label: 'Agent 活动台' },
     { key: 'approval', icon: <SafetyOutlined />, label: '审批中心' },
+    { key: 'rules', icon: <BulbOutlined />, label: '风险规则' },
   ]
   const currentLabel = menuItems.find(m => m.key === tab)?.label || ''
 
@@ -168,6 +170,12 @@ function App() {
               display: tab === 'approval' ? 'block' : 'none',
             }}>
               <ApprovalCenter />
+            </div>
+            <div style={{
+              position: 'absolute', inset: 0,
+              display: tab === 'rules' ? 'block' : 'none',
+            }}>
+              <RiskRules />
             </div>
           </Content>
         </Layout>

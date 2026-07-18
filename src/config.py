@@ -22,10 +22,10 @@ DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "ai
 # 留空则不启用认证 (仅限开发环境)
 CONSOLE_TOKEN = os.getenv("CONSOLE_TOKEN", "")
 
-# ---- 审批模式 ----
-# true: console 模式, 高危操作自动批准
-# false: Web 模式, 高危操作需人工审批 (通过审批中心)
-AUTO_APPROVE = os.getenv("AUTO_APPROVE", "false").lower() == "true"
+# ---- 自治模式 (§21.2 双轴之轴1) ----
+# supervised: 高危操作需人工审批 (通过审批中心)
+# autonomous: 无人值守, 按安全护栏四档策略自动执行
+AUTONOMY = os.getenv("AUTONOMY", "supervised").lower()
 
 MAX_REACT_ITERATIONS = 15
 MAX_TOKENS = 2048

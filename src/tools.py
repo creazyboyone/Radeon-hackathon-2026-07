@@ -131,17 +131,37 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_remote_config",
+            "description": "修改远程节点配置文件(reversible档). 先备份 .bak.<ts>, 再 sed 替换, 最后 reload 服务. 用于调整 JVM heap/参数等可回滚操作",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string", "description": "服务名(用于 reload): NameNode/DataNode/ResourceManager 等"},
+                    "node": {"type": "string", "description": "节点名, 如 hadoop03"},
+                    "file": {"type": "string", "description": "远程配置文件完整路径"},
+                    "find": {"type": "string", "description": "要查找的原始内容(将被替换)"},
+                    "replace": {"type": "string", "description": "替换为的新内容"},
+                    "reason": {"type": "string", "description": "修改理由"},
+                },
+                "required": ["service", "node", "file", "find", "replace", "reason"],
+            },
+        },
+    },
 ]
 
-# ---- 风险映射 ----
+# ---- 风险映射 (fallback, classify 优先用 DB risk_rules) ----
 TOOL_RISK = {
     "get_service_status": RISK_LOW,
     "get_alerts": RISK_LOW,
     "get_metrics": RISK_LOW,
     "read_logs": RISK_LOW,
     "search_kb": RISK_LOW,
-    "restart_service": RISK_HIGH,      # 默认高危, 实际按 SERVICE_MAP[svc].core 细分
+    "restart_service": RISK_HIGH,
     "hdfs_admin": RISK_LOW,
+    "edit_remote_config": RISK_MEDIUM,
 }
 
 TOOL_HANDLERS = {}
@@ -582,6 +602,53 @@ def _hdfs_admin(action="", path="/"):
     }
 
 
+@tool("edit_remote_config")
+def _edit_remote_config(service="", node="", file="", find="", replace="", reason=""):
+    """修改远程配置文件 (§21.4 reversible: 先备份 .bak.<ts> 再 sed 替换 再 reload)
+
+    Guardrail 确保走 reversible 档; 备份失败则中止, 替换失败则自动回滚。
+    """
+    if not all([service, node, file, find, replace]):
+        return {"error": "参数缺失: 需 service/node/file/find/replace"}
+
+    svc_info = SERVICE_MAP.get(service)
+    if not svc_info:
+        return {"error": f"未知服务: {service}", "available": list(SERVICE_MAP.keys())}
+
+    ip = _node_ip(node)
+    ts = int(time.time())
+    safe_file = shlex.quote(file)
+
+    # 1. 备份
+    _, stderr, rc = ssh_exec(ip, f"cp {safe_file} {safe_file}.bak.{ts}", timeout=15)
+    if rc != 0:
+        return {"error": f"备份失败: {stderr}", "result": "failed"}
+
+    # 2. sed 替换 (用 | 做分隔符避免 find/replace 中的 /)
+    sed_cmd = f"sed -i 's|{find}|{replace}|g' {safe_file} && grep -c '{replace}' {safe_file}"
+    stdout, stderr, rc = ssh_exec(ip, sed_cmd, timeout=15)
+    if rc != 0:
+        ssh_exec(ip, f"cp {safe_file}.bak.{ts} {safe_file}", timeout=15)
+        return {"error": f"sed 替换失败: {stderr}, 已回滚",
+                "result": "failed", "backup": f"{file}.bak.{ts}"}
+
+    # 3. reload 服务 (CM API commands/restart)
+    cm_svc = svc_info["cm_service"]
+    cmd_data = cm_post(f"/clusters/{CM_CLUSTER}/services/{cm_svc}/commands/restart")
+
+    return {
+        "service": service,
+        "node": node,
+        "file": file,
+        "reason": reason,
+        "backup": f"{file}.bak.{ts}",
+        "replacements": stdout.strip() if stdout else "0",
+        "command_id": cmd_data.get("id", ""),
+        "result": "starting" if cmd_data.get("id") else "failed",
+        "hint": "配置已修改并备份, CM 正在 reload 服务, 请等待后用 get_service_status 验证",
+    }
+
+
 # ============================================================
 # 执行入口
 # ============================================================
@@ -611,7 +678,7 @@ AUTO_TOOL_NAMES = [
     "get_service_status", "get_alerts", "get_metrics",
     "read_logs", "search_kb", "hdfs_admin",
 ]
-FIX_TOOL_NAMES = AUTO_TOOL_NAMES + ["restart_service"]
+FIX_TOOL_NAMES = AUTO_TOOL_NAMES + ["restart_service", "edit_remote_config"]
 
 
 def get_tool_definitions(names):

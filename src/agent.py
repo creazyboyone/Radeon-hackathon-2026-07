@@ -11,7 +11,7 @@ from .tools import (TOOL_RISK, get_tool_definitions,
                    AUTO_TOOL_NAMES, FIX_TOOL_NAMES)
 from .db import Store
 from .guardrails import Guardrail
-from .config import MAX_REACT_ITERATIONS, MAX_TOKENS, TEMPERATURE, AUTO_APPROVE
+from .config import MAX_REACT_ITERATIONS, MAX_TOKENS, TEMPERATURE, AUTONOMY
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class ReActAgent:
         self.llm = llm
         self.store = store
         self.mode = mode
-        self.guardrail = guardrail or Guardrail(store, auto_approve=AUTO_APPROVE)
+        self.guardrail = guardrail or Guardrail(store, autonomy=AUTONOMY)
         if mode == "auto":
             self.tool_names = AUTO_TOOL_NAMES
             self.system_prompt = AUTO_PROMPT

@@ -30,7 +30,32 @@ CREATE TABLE IF NOT EXISTS approvals (
     risk_level TEXT, dry_run_json TEXT,
     status TEXT, decided_by TEXT, decided_at INTEGER, ts INTEGER
 );
+CREATE TABLE IF NOT EXISTS risk_rules (
+    id          TEXT PRIMARY KEY,
+    tool_name   TEXT NOT NULL,
+    match_json  TEXT,
+    tier        TEXT NOT NULL,
+    autonomous  INTEGER NOT NULL DEFAULT 0,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    priority    INTEGER NOT NULL DEFAULT 0,
+    updated_at  INTEGER,
+    updated_by  TEXT
+);
 """
+
+# 默认风险规则种子数据 (§21.3 — 首启若空则灌入)
+_DEFAULT_RISK_RULES = [
+    ("rule_get_service_status", "get_service_status", None, "low",      1, 1, 0),
+    ("rule_get_alerts",         "get_alerts",         None, "low",      1, 1, 0),
+    ("rule_get_metrics",       "get_metrics",        None, "low",      1, 1, 0),
+    ("rule_read_logs",         "read_logs",          None, "low",      1, 1, 0),
+    ("rule_search_kb",         "search_kb",          None, "low",      1, 1, 0),
+    ("rule_hdfs_admin",        "hdfs_admin",         None, "low",      1, 1, 0),
+    ("rule_restart_service",   "restart_service",    None, "recover",  1, 1, 0),
+    ("rule_edit_remote_config","edit_remote_config", None, "reversible", 1, 1, 0),
+    # fail-closed 默认: 未知工具一律不可逆 + 不自动
+    ("rule_default",           "*",                  None, "irreversible", 0, 1, -1),
+]
 
 
 class Store:
@@ -42,23 +67,28 @@ class Store:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(_SCHEMA)
-        # 创建索引提升查询性能
         self.conn.executescript(
             "CREATE INDEX IF NOT EXISTS idx_events_session "
             "ON session_events(session_id, seq);"
             "CREATE INDEX IF NOT EXISTS idx_audit_session "
             "ON audit_log(session_id);"
+            "CREATE INDEX IF NOT EXISTS idx_audit_tool "
+            "ON audit_log(tool_name, ts);"
             "CREATE INDEX IF NOT EXISTS idx_approvals_session "
             "ON approvals(session_id);"
             "CREATE INDEX IF NOT EXISTS idx_approvals_status "
             "ON approvals(status);"
+            "CREATE INDEX IF NOT EXISTS idx_risk_rules_tool "
+            "ON risk_rules(tool_name, enabled, priority DESC);"
         )
+        self._seed_risk_rules()
         self.conn.commit()
 
     @property
     def lock(self):
-        """暴露锁, 供外部直接操作 conn 时使用 (guardrails/app 等)"""
         return self._lock
+
+    # ---- session ----
 
     def create_session(self, session_type="fix", parent_id=None, trigger=""):
         sid = str(uuid.uuid4())[:8]
@@ -106,3 +136,88 @@ class Store:
             except Exception:
                 pass
         return {}
+
+    # ---- risk_rules CRUD (§21.3) ----
+
+    def _seed_risk_rules(self):
+        """首启若空则灌入默认规则"""
+        count = self.conn.execute("SELECT COUNT(*) FROM risk_rules").fetchone()[0]
+        if count > 0:
+            return
+        for rid, tool, match_json, tier, auto, enabled, pri in _DEFAULT_RISK_RULES:
+            self.conn.execute(
+                "INSERT INTO risk_rules(id,tool_name,match_json,tier,autonomous,"
+                "enabled,priority,updated_at,updated_by) VALUES(?,?,?,?,?,?,?,?,?)",
+                (rid, tool, match_json, tier, auto, enabled, pri,
+                 int(time.time()), "seed"),
+            )
+        logger.info(f"Seeded {len(_DEFAULT_RISK_RULES)} default risk_rules")
+
+    def get_risk_rules(self, enabled_only=False):
+        """获取所有风险规则"""
+        sql = "SELECT id,tool_name,match_json,tier,autonomous,enabled,priority,updated_at,updated_by FROM risk_rules"
+        if enabled_only:
+            sql += " WHERE enabled=1"
+        sql += " ORDER BY priority DESC, tool_name"
+        with self._lock:
+            rows = self.conn.execute(sql).fetchall()
+        return [
+            {"id": r[0], "tool_name": r[1],
+             "match_json": json.loads(r[2]) if r[2] else None,
+             "tier": r[3], "autonomous": bool(r[4]),
+             "enabled": bool(r[5]), "priority": r[6],
+             "updated_at": r[7] or 0, "updated_by": r[8] or ""}
+            for r in rows
+        ]
+
+    def upsert_risk_rule(self, rule: dict):
+        """插入或更新风险规则"""
+        rid = rule.get("id") or str(uuid.uuid4())[:8]
+        match_json = json.dumps(rule["match_json"], ensure_ascii=False) if rule.get("match_json") else None
+        # §21.3 UI 护栏: irreversible 档禁止 autonomous=1
+        autonomous = 0 if rule.get("tier") == "irreversible" else (1 if rule.get("autonomous") else 0)
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO risk_rules(id,tool_name,match_json,tier,autonomous,"
+                "enabled,priority,updated_at,updated_by) "
+                "VALUES(?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET "
+                "tool_name=excluded.tool_name, match_json=excluded.match_json, "
+                "tier=excluded.tier, autonomous=excluded.autonomous, "
+                "enabled=excluded.enabled, priority=excluded.priority, "
+                "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+                (rid, rule["tool_name"], match_json, rule["tier"],
+                 autonomous, 1 if rule.get("enabled", True) else 0,
+                 rule.get("priority", 0), int(time.time()),
+                 rule.get("updated_by", "web-user"))
+            )
+            self.conn.commit()
+        return rid
+
+    def delete_risk_rule(self, rule_id: str):
+        """删除风险规则"""
+        with self._lock:
+            self.conn.execute("DELETE FROM risk_rules WHERE id=?", (rule_id,))
+            self.conn.commit()
+
+    # ---- audit_log 查询 (供 §21.5 attempt 节流) ----
+
+    def count_audit_attempts(self, tool_name, target, window_sec=600):
+        """统计观察窗口内某 (tool, target) 的已执行次数, 供 attempt 节流"""
+        cutoff = int(time.time()) - window_sec
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM audit_log "
+                "WHERE tool_name=? AND status='executed' AND ts>? "
+                "AND json_extract(args_json, '$.service')=?",
+                (tool_name, cutoff, target)
+            ).fetchone()
+            last_ts_row = self.conn.execute(
+                "SELECT MAX(ts) FROM audit_log "
+                "WHERE tool_name=? AND status='executed' "
+                "AND json_extract(args_json, '$.service')=?",
+                (tool_name, target)
+            ).fetchone()
+        count = row[0] if row else 0
+        last_ts = last_ts_row[0] if last_ts_row and last_ts_row[0] else 0
+        return count, last_ts
