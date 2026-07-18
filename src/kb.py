@@ -22,6 +22,11 @@ import struct
 import threading
 import time
 
+try:
+    import numpy as np
+except ImportError:  # numpy 缺失时 cosine_similarity 回退纯 Python
+    np = None
+
 logger = logging.getLogger(__name__)
 
 # ---- 嵌入模型 (懒加载, 单例) ----
@@ -104,9 +109,11 @@ def cosine_similarity(a: list, b: list) -> float:
     """计算两个向量的余弦相似度 (已归一化则等于点积)"""
     if not a or not b or len(a) != len(b):
         return 0.0
-    # 已归一化: dot product
-    dot = sum(x * y for x, y in zip(a, b))
-    return dot
+    # 已归一化: dot product。numpy 可用时向量化 (100x+ 快于纯 Python 循环)
+    if np is not None:
+        return float(np.dot(np.asarray(a, dtype=np.float32),
+                            np.asarray(b, dtype=np.float32)))
+    return sum(x * y for x, y in zip(a, b))
 
 
 # ---- 向量索引管理 ----
@@ -181,10 +188,12 @@ def hybrid_search(store, query: str, limit: int = 5) -> list:
         fts_results = store.search_runbooks_fts(query, limit=limit * 2)
         for r in fts_results:
             if r["id"] not in results:
-                # BM25 score 越小越好 (负数), 转换为 0-1 的正分
+                # FTS5 bm25() 返回负值, 越负越相关 (db.py 按 score ASC 排序)
                 bm25_score = r.get("score", 0)
-                # bm25 返回负值, 越接近 0 越好; 转为正分
-                norm_score = max(0.0, min(1.0, 1.0 + bm25_score))
+                # 单调映射 |score|->(0,1): 越相关分越高, 且不会像 1+score 那样
+                # 在 score<-1 时被钳到 0 (原实现的 bug: 最相关结果反而垫底)
+                strength = -bm25_score if bm25_score < 0 else 0.0
+                norm_score = strength / (1.0 + strength)
                 results[r["id"]] = {
                     "id": r["id"], "title": r["title"],
                     "content": r["content"], "tags": r["tags"],
