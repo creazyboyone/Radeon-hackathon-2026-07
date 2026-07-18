@@ -11,6 +11,7 @@ import json
 import time
 import uuid
 import logging
+import threading
 
 from .tools import execute_tool, cm_get, CM_CLUSTER, SERVICE_MAP
 
@@ -30,6 +31,8 @@ class Guardrail:
     # 类级共享: 跨 Guardrail 实例 (跨 /fix 会话) 累积失败计数
     _failure_counts = {}
     _last_failure_ts = {}
+    # 保护上面两个类级 dict 的读-改-写 (多 fix 会话并发时避免竞态)
+    _circuit_lock = threading.Lock()
 
     def __init__(self, store, autonomy="supervised"):
         self.store = store
@@ -397,24 +400,27 @@ class Guardrail:
     # ---- 熔断 (§9 保留, 失败侧; 类级共享跨会话) ----
 
     def _is_circuit_broken(self, service):
-        count = Guardrail._failure_counts.get(service, 0)
-        if count >= self.max_failures:
-            last_ts = Guardrail._last_failure_ts.get(service, 0)
-            if time.time() - last_ts < self.circuit_cooldown:
-                return True
-            else:
-                Guardrail._failure_counts[service] = 0
-                Guardrail._last_failure_ts.pop(service, None)
-        return False
+        with Guardrail._circuit_lock:
+            count = Guardrail._failure_counts.get(service, 0)
+            if count >= self.max_failures:
+                last_ts = Guardrail._last_failure_ts.get(service, 0)
+                if time.time() - last_ts < self.circuit_cooldown:
+                    return True
+                else:
+                    Guardrail._failure_counts[service] = 0
+                    Guardrail._last_failure_ts.pop(service, None)
+            return False
 
     def _increment_failure(self, service):
-        Guardrail._failure_counts[service] = \
-            Guardrail._failure_counts.get(service, 0) + 1
-        Guardrail._last_failure_ts[service] = time.time()
+        with Guardrail._circuit_lock:
+            Guardrail._failure_counts[service] = \
+                Guardrail._failure_counts.get(service, 0) + 1
+            Guardrail._last_failure_ts[service] = time.time()
 
     def _reset_failure(self, service):
-        Guardrail._failure_counts.pop(service, None)
-        Guardrail._last_failure_ts.pop(service, None)
+        with Guardrail._circuit_lock:
+            Guardrail._failure_counts.pop(service, None)
+            Guardrail._last_failure_ts.pop(service, None)
 
     @staticmethod
     def _is_failed(result):

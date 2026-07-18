@@ -11,6 +11,7 @@ import json
 import logging
 import shlex
 import subprocess
+import threading
 import time
 import requests
 from requests.adapters import HTTPAdapter
@@ -830,18 +831,22 @@ def inject_fault(fault="datanode_oom"):
 
 # 告警缓存: 避免 orchestrator 每 2s 轮询时对 CM 发起几十次请求
 _alerts_cache = {"data": [], "ts": 0}
+_alerts_cache_lock = threading.Lock()
 _ALERTS_CACHE_TTL = 10  # 秒
 
 
 def get_pending_alerts():
     """获取当前待处理告警 (供 orchestrator 调度用), 带 10s 缓存避免 CM 轮询风暴"""
     now = time.time()
-    if now - _alerts_cache["ts"] < _ALERTS_CACHE_TTL:
-        return _alerts_cache["data"]
+    # 快路径: 持锁读缓存 (不在锁内打 CM API, 避免并发线程全部阻塞等响应)
+    with _alerts_cache_lock:
+        if now - _alerts_cache["ts"] < _ALERTS_CACHE_TTL:
+            return _alerts_cache["data"]
     result = _get_alerts()
     alerts = result.get("alerts", [])
-    _alerts_cache["data"] = alerts
-    _alerts_cache["ts"] = now
+    with _alerts_cache_lock:
+        _alerts_cache["data"] = alerts
+        _alerts_cache["ts"] = time.time()
     return alerts
 
 
