@@ -34,6 +34,15 @@ function fmtTime(ts: number): string {
   return new Date(ts * 1000).toLocaleTimeString('zh-CN', { hour12: false })
 }
 
+function fmtDateTime(ts: number): string {
+  const d = new Date(ts * 1000)
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  const hh = String(d.getHours()).padStart(2, '0')
+  const min = String(d.getMinutes()).padStart(2, '0')
+  return `${mm}/${dd} ${hh}:${min}`
+}
+
 function extractCall(name: string, args: any): string {
   if (!args) return ''
   const p: string[] = []
@@ -214,13 +223,18 @@ function AgentActivity() {
     const children = sessions.filter(c => c.parent_id === s.id)
     const labels: Record<string, string> = { master: '主控', auto: '巡检', fix: '修复' }
     const colors: Record<string, string> = { master: 'processing', auto: 'blue', fix: 'warning' }
+    // 蓝点规则：1) 最新的活跃master  2) 最新master下的未结束巡检/修复
+    const latestMaster = sessions.find(x => x.type === 'master' && !x.ended_at)
+    const isLatestMaster = s.type === 'master' && !s.ended_at && s.id === latestMaster?.id
+    // 只有最新master下的活跃巡检/修复才显示蓝点
+    const isActiveTask = (s.type === 'auto' || s.type === 'fix') && !s.ended_at && s.parent_id === latestMaster?.id
     return {
       key: s.id,
       title: (
         <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <Tag color={colors[s.type]} style={{ margin: 0, fontSize: 11 }}>{labels[s.type] || s.type}</Tag>
-          <Text style={{ fontSize: 11, color: '#94a3b8' }}>{fmtTime(s.started_at)}</Text>
-          {!s.ended_at && <Badge status="processing" />}
+          <Text style={{ fontSize: 11, color: '#94a3b8' }}>{fmtDateTime(s.started_at)}</Text>
+          {(isLatestMaster || isActiveTask) && <Badge status="processing" title="进行中" />}
         </span>
       ),
       children: children.map(buildTree),

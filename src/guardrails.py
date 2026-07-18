@@ -361,9 +361,39 @@ class Guardrail:
                 "message": f"dry-run preview for {tool_name}"}
 
     def _request_approval(self, session_id, tool_name, args, tier, dry_run, timeout=600):
-        """请求审批 — supervised 模式阻塞等待人工审批"""
-        approval_id = str(uuid.uuid4())[:8]
+        """请求审批 — supervised 模式阻塞等待人工审批
+        
+        去重：如果相同工具+相同参数已有pending审批，直接等待该审批结果
+        """
+        svc = args.get("service", "")
+        node = args.get("node", "")
+        
+        # 检查是否已有相同工具+相同参数的pending审批
         with self.store.lock:
+            existing = self.store.conn.execute(
+                "SELECT id FROM approvals WHERE tool_name=? AND status='pending' "
+                "AND json_extract(args_json, '$.service')=? "
+                "AND json_extract(args_json, '$.node')=? "
+                "ORDER BY ts DESC LIMIT 1",
+                (tool_name, svc, node)
+            ).fetchone()
+            if existing:
+                approval_id = existing[0]
+                logger.info(f"复用已有pending审批 {approval_id} for {tool_name}({svc})")
+            else:
+                approval_id = str(uuid.uuid4())[:8]
+                self.store.conn.execute(
+                    "INSERT INTO approvals(id,session_id,tool_name,args_json,"
+                    "risk_level,dry_run_json,status,ts) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (approval_id, session_id, tool_name,
+                     json.dumps(args, ensure_ascii=False), tier,
+                     json.dumps(dry_run, ensure_ascii=False),
+                     "pending", int(time.time()))
+                )
+                self.store.conn.commit()
+        
+        # 如果复用了已有审批，从这里开始等待
             self.store.conn.execute(
                 "INSERT INTO approvals(id,session_id,tool_name,args_json,"
                 "risk_level,dry_run_json,status,ts) "
