@@ -786,7 +786,7 @@ runbooks(
 
 | 项 | 状态 | 备注 |
 |---|---|---|
-| MTP 是否被 llama.cpp 支持 | ❌ 当前未生效 | GGUF 含 MTP 层但未配 draft，日志报 `no implementations specified`。功能不影响，后续若启需配 speculative decoding |
+| MTP 是否被 llama.cpp 支持 | ✅ 已启用 | `--spec-type draft-mtp --spec-draft-n-max 1`。基准测试 (n_max=1~8)：n_max=1 最优 37.5 t/s (+30% vs baseline 28.9 t/s)，接受率 77.4%。n_max 越大接受率衰减越快 (n_max=8 仅 24%)，最优值为 1 |
 | 模型确切型号与官方 GGUF | ✅ 已确认 | `Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf`，27B 稠密 + tool-calling 可用 |
 | thinking 模型处理 | ✅ 已确认 | `reasoning_content` 独立字段，agent 直接读，无需解析 `<think>` |
 | 紧急覆盖阈值/次数/冷却 | ✅ 已由 §21 解决 | 改为 attempt 节流（按 `(tool,target)` 查 audit_log，超限升级人工）；具体数值见 TODO 待敲定 |

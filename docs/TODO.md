@@ -29,6 +29,7 @@
 - [x] tool-calling 格式验证
 - [x] thinking 模型 `reasoning_content` 独立字段确认
 - [x] 性能基线测量（生成 ~29 t/s、prompt 衰减曲线、VRAM 21.7G/51.5G）
+- [x] MTP 投机解码启用 + 参数调优（`--spec-type draft-mtp`，基准测试 n_max=1~8，最优 n_max=1 达 37.5 t/s +30%）
 
 ### M2 — 工具层 + 单 session ReAct
 - [x] `get_service_status` / `get_alerts` / `get_metrics` / `read_logs`（预压缩）/ `search_kb` / `restart_service`（CM API）/ `hdfs_admin`
@@ -93,4 +94,4 @@
 ## 其他遗留（仅记录）
 - 集群环境：临时 CDH 6.3.2（176/177/178）→ docker-compose
 - CM API 单角色操作不支持（v30 仅整服务 commands/restart），recover 按服务单位执行
-- MTP 未生效（GGUF 含层未配 draft），功能不影响
+- MTP 已生效（`--spec-type draft-mtp --spec-draft-n-max 1`），最优参数经基准测试确认，+30% 加速
