@@ -624,12 +624,20 @@ def _edit_remote_config(service="", node="", file="", find="", replace="", reaso
     if rc != 0:
         return {"error": f"备份失败: {stderr}", "result": "failed"}
 
-    # 2. sed 替换 (用 | 做分隔符避免 find/replace 中的 /)
-    sed_cmd = f"sed -i 's|{find}|{replace}|g' {safe_file} && grep -c '{replace}' {safe_file}"
-    stdout, stderr, rc = ssh_exec(ip, sed_cmd, timeout=15)
+    # 2. 字面替换 (用 python3 避免 sed 正则注入, find/replace 经 shlex.quote 转义)
+    py_script = (
+        "import sys; f=sys.argv[1]; find=sys.argv[2]; repl=sys.argv[3];"
+        "c=open(f).read(); n=c.count(find); "
+        "open(f,'w').write(c.replace(find,repl)); print(n)"
+    )
+    replace_cmd = (
+        f"python3 -c {shlex.quote(py_script)} {safe_file} "
+        f"{shlex.quote(find)} {shlex.quote(replace)}"
+    )
+    stdout, stderr, rc = ssh_exec(ip, replace_cmd, timeout=15)
     if rc != 0:
         ssh_exec(ip, f"cp {safe_file}.bak.{ts} {safe_file}", timeout=15)
-        return {"error": f"sed 替换失败: {stderr}, 已回滚",
+        return {"error": f"替换失败: {stderr}, 已回滚",
                 "result": "failed", "backup": f"{file}.bak.{ts}"}
 
     # 3. reload 服务 (CM API commands/restart)

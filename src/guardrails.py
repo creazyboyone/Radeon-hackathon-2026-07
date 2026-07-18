@@ -27,12 +27,14 @@ TIER_IRREVERSIBLE = "irreversible"
 class Guardrail:
     """§21 安全护栏 — 双轴四档分级自治"""
 
+    # 类级共享: 跨 Guardrail 实例 (跨 /fix 会话) 累积失败计数
+    _failure_counts = {}
+    _last_failure_ts = {}
+
     def __init__(self, store, autonomy="supervised"):
         self.store = store
         self.autonomy = autonomy  # "supervised" / "autonomous"
-        # 熔断 (失败侧, §9 保留)
-        self._failure_counts = {}
-        self._last_failure_ts = {}
+        # 熔断 (失败侧, §9 保留) — 用类级共享状态
         self.max_failures = 3
         self.circuit_cooldown = 300
         # attempt 节流 (尝试侧, §21.5)
@@ -42,6 +44,9 @@ class Guardrail:
         # classify 缓存 (§21.3 TTL)
         self._rules_cache = {"data": None, "ts": 0}
         self._rules_cache_ttl = 30  # 30s 缓存
+        # _refine_restart 缓存 (避免每次 restart 都打 CM API)
+        self._refine_cache = {}  # {svc+node: (tier, autonomous, ts)}
+        self._refine_cache_ttl = 10  # 10s
 
     # ============================================================
     # §21.3 classify — 纯规则 + DB + fail-closed
@@ -59,10 +64,7 @@ class Guardrail:
         if tool_name == "restart_service" and tier == TIER_RECOVER:
             tier, autonomous = self._refine_restart(args, tier, autonomous)
 
-        # supervised 模式下所有高危档都需人工
-        if self.autonomy == "supervised" and tier not in (TIER_LOW, TIER_MEDIUM):
-            autonomous = False
-
+        # autonomous 标志保留规则原意, 分支用 self.autonomy 决策
         return tier, autonomous
 
     def _get_rules_cached(self):
@@ -106,6 +108,7 @@ class Guardrail:
 
         - STOPPED/DOWN/UNKNOWN → 维持 recover (重启不会更糟)
         - RUNNING 但不健康 → 降为 irreversible (不主动制造中断)
+        - 带 10s 缓存避免每次都打 CM API
         """
         svc = args.get("service", "")
         svc_info = SERVICE_MAP.get(svc, {})
@@ -113,6 +116,13 @@ class Guardrail:
         role_type = svc_info.get("cm_role_type", "")
         if not cm_svc:
             return tier, autonomous
+
+        # 缓存检查
+        cache_key = svc + ":" + (args.get("node", "") or "")
+        now = time.time()
+        cached = self._refine_cache.get(cache_key)
+        if cached and now - cached[2] < self._refine_cache_ttl:
+            return cached[0], cached[1]
 
         data = cm_get(f"/clusters/{CM_CLUSTER}/services/{cm_svc}/roles")
         target_node = args.get("node", "")
@@ -128,8 +138,12 @@ class Guardrail:
             if state in ("STOPPED", "DOWN", "UNKNOWN"):
                 continue  # 维持 recover
             # RUNNING 但不健康 → 不主动制造中断
-            return TIER_IRREVERSIBLE, False
-        return tier, autonomous
+            result = TIER_IRREVERSIBLE, False
+            self._refine_cache[cache_key] = (result[0], result[1], now)
+            return result
+        result = tier, autonomous
+        self._refine_cache[cache_key] = (result[0], result[1], now)
+        return result
 
     # ============================================================
     # §21.4 execute — 四档分支
@@ -168,8 +182,9 @@ class Guardrail:
     def _exec_recover(self, tool_name, args, tier, session_id, autonomous):
         """recover: 可恢复幂等操作 (如重启已 DOWN 服务)
 
-        autonomous: attempt 节流 → 自动执行
-        supervised: 走审批门 → 等人工
+        autonomous 模式 + 规则允许 → attempt 节流 → 自动执行
+        autonomous 模式 + 规则禁止 → 立即拒绝 + 升级告警 (无人审, 不等)
+        supervised 模式 → 走审批门 → 等人工
         """
         svc = args.get("service", "")
 
@@ -180,19 +195,25 @@ class Guardrail:
             logger.warning(msg)
             return {"error": msg, "circuit_broken": True}
 
-        if autonomous:
-            # §21.5 attempt 节流
+        if self.autonomy == "autonomous" and autonomous:
+            # §21.5 attempt 节流 → 自动执行
             blocked = self._check_attempt_throttle(tool_name, svc)
             if blocked:
                 self._audit(session_id, tool_name, args, "attempt_throttled", tier, blocked)
                 return blocked
-        else:
+        elif self.autonomy == "supervised":
             # supervised: 走审批门
             approval = self._request_approval(session_id, tool_name, args, tier,
                                                self._dry_run(tool_name, args))
             if approval["status"] != "approved":
                 self._audit(session_id, tool_name, args, "rejected", tier, approval)
                 return {"error": "审批未通过", "approval": approval}
+        else:
+            # autonomous 模式但规则禁止自动执行 → 立即拒绝 + 升级
+            msg = f"规则禁止自动执行 {tool_name}({svc}), autonomous 模式下拒绝, 已升级告警"
+            self._audit(session_id, tool_name, args, "auto_rejected", tier)
+            self._notify(msg)
+            return {"error": msg, "escalated": True}
 
         # 执行
         result = self._do_execute(tool_name, args, tier, session_id)
@@ -213,22 +234,29 @@ class Guardrail:
     def _exec_reversible(self, tool_name, args, tier, session_id, autonomous):
         """reversible: 可回撤操作 (先备份→改→reload)
 
-        autonomous: 自动执行但强制先备份
-        supervised: 走审批门
+        autonomous 模式 + 规则允许 → attempt 节流 → 自动执行 (强制先备份)
+        autonomous 模式 + 规则禁止 → 立即拒绝 + 升级告警
+        supervised 模式 → 走审批门
         """
         svc = args.get("service", "")
 
-        if not autonomous:
+        if self.autonomy == "autonomous" and autonomous:
+            blocked = self._check_attempt_throttle(tool_name, svc)
+            if blocked:
+                self._audit(session_id, tool_name, args, "attempt_throttled", tier, blocked)
+                return blocked
+        elif self.autonomy == "supervised":
             approval = self._request_approval(session_id, tool_name, args, tier,
                                                self._dry_run(tool_name, args))
             if approval["status"] != "approved":
                 self._audit(session_id, tool_name, args, "rejected", tier, approval)
                 return {"error": "审批未通过", "approval": approval}
         else:
-            blocked = self._check_attempt_throttle(tool_name, svc)
-            if blocked:
-                self._audit(session_id, tool_name, args, "attempt_throttled", tier, blocked)
-                return blocked
+            # autonomous 模式但规则禁止自动执行 → 立即拒绝 + 升级
+            msg = f"规则禁止自动执行 {tool_name}({svc}), autonomous 模式下拒绝, 已升级告警"
+            self._audit(session_id, tool_name, args, "auto_rejected", tier)
+            self._notify(msg)
+            return {"error": msg, "escalated": True}
 
         result = self._do_execute(tool_name, args, tier, session_id)
         if self._is_failed(result):
@@ -238,14 +266,15 @@ class Guardrail:
         return result
 
     def _exec_irreversible(self, tool_name, args, tier, session_id, autonomous):
-        """irreversible: 不可逆操作
+        """irreversible: 不可逆操作 (永不自动执行)
 
-        autonomous: 直接放弃 + 升级告警 (不傻等超时)
-        supervised: 走审批门, 超时=拒绝
+        autonomous 模式 → 直接放弃 + 升级告警 (不等审批, 无人审)
+        supervised 模式 → 走审批门, 超时=拒绝
         """
         svc = args.get("service", "")
 
-        if not autonomous:
+        if self.autonomy == "supervised":
+            # supervised: 等人工审批
             approval = self._request_approval(session_id, tool_name, args, tier,
                                                self._dry_run(tool_name, args))
             if approval["status"] != "approved":
@@ -253,6 +282,7 @@ class Guardrail:
                 return {"error": "审批未通过", "approval": approval}
             return self._do_execute(tool_name, args, tier, session_id)
         else:
+            # autonomous: 永不自动执行不可逆操作 → 立即拒绝 + 升级
             msg = (f"[IRREVERSIBLE] {tool_name}({svc}) 属不可逆操作, "
                    f"autonomous 模式下拒绝自动执行, 已升级告警")
             self._audit(session_id, tool_name, args, "auto_rejected", tier)
@@ -361,27 +391,27 @@ class Guardrail:
         return {"id": approval_id, "status": "rejected",
                 "decided_by": "timeout", "message": "审批超时, 已自动拒绝"}
 
-    # ---- 熔断 (§9 保留, 失败侧) ----
+    # ---- 熔断 (§9 保留, 失败侧; 类级共享跨会话) ----
 
     def _is_circuit_broken(self, service):
-        count = self._failure_counts.get(service, 0)
+        count = Guardrail._failure_counts.get(service, 0)
         if count >= self.max_failures:
-            last_ts = self._last_failure_ts.get(service, 0)
+            last_ts = Guardrail._last_failure_ts.get(service, 0)
             if time.time() - last_ts < self.circuit_cooldown:
                 return True
             else:
-                self._failure_counts[service] = 0
-                self._last_failure_ts.pop(service, None)
+                Guardrail._failure_counts[service] = 0
+                Guardrail._last_failure_ts.pop(service, None)
         return False
 
     def _increment_failure(self, service):
-        self._failure_counts[service] = \
-            self._failure_counts.get(service, 0) + 1
-        self._last_failure_ts[service] = time.time()
+        Guardrail._failure_counts[service] = \
+            Guardrail._failure_counts.get(service, 0) + 1
+        Guardrail._last_failure_ts[service] = time.time()
 
     def _reset_failure(self, service):
-        self._failure_counts.pop(service, None)
-        self._last_failure_ts.pop(service, None)
+        Guardrail._failure_counts.pop(service, None)
+        Guardrail._last_failure_ts.pop(service, None)
 
     @staticmethod
     def _is_failed(result):

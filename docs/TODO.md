@@ -14,7 +14,7 @@
 | M3 编排层 | ✅ 完成 | Orchestrator / master / 子session / 抢占 |
 | M4 安全护栏（初版） | ✅ 完成 | 风险分级 / dry-run / 审批 / 审计 / 熔断 |
 | 缺陷修复轮次 | ✅ 完成 | 7 项核心缺陷 + 20 项静态审查 |
-| §21 安全护栏**重设计** | 🔧 设计中完成，**实施待做** | 双轴+四档+DB规则+attempt节流 |
+| §21 安全护栏**重设计** | ✅ 完成 | 双轴+四档+DB规则+attempt节流（T1–T8 已落地，含评审修复） |
 | M5 知识库 + 学习闭环 | ⬜ 待做 | sqlite-vec / write_runbook |
 | M6 Web 控制台 | ✅ 完成 | 后端+前端；Grafana 嵌入 / admin 美化待补 |
 | M7 演示与提交 | ⬜ 待做 | 多剧本 / 录屏 / README / 性能数据 |
@@ -48,8 +48,8 @@
 - [x] dry-run 预演
 - [x] 审批门（console 自动 / web 等人工）
 - [x] 审计日志（audit_log）
-- [x] 熔断（连续失败上限 + 冷却）
-- [ ] 回滚机制（为 `edit_remote_config` 预留，见 §21 T5）
+- [x] 熔断（连续失败上限 + 冷却，类级跨会话共享）
+- [x] 回滚机制（`edit_remote_config` 先备份 `.bak.<ts>`，替换失败自动回滚，见 §21 T5）
 
 ### 缺陷修复轮次（评审发现并已修）
 - [x] 状态卡数据结构（后端 `services` 改回对象 + `overall_health`）
@@ -61,28 +61,21 @@
 - [x] 单节点重启误会（tool 描述/hint 写明 CM 以服务为单位）
 - [x] 静态 20 项：命令注入转义 / CORS / 审批流程 / 流式异常 / 死代码 / 前端错误处理等
 
-### §21 设计（已完成，待实施）
+### §21 安全护栏分级自治（设计 + 实施均完成，T1–T8）
 - [x] DESIGN §21 落地：双轴（AUTONOMY × tier）+ 四档 + DB 规则 + attempt 节流
 - [x] 关键决议确认：定级不归模型 / recover 仅 DOWN / irreversible 永不自动
+- [x] **T1.** `risk_rules` 表 + 迁移 + 种子（`*` 默认 fail-closed → irreversible）
+- [x] **T2.** `classify()`：查 `risk_rules`（TTL 缓存）+ `match_json` 命中 + fail-closed；替代静态 `TOOL_RISK`
+- [x] **T3.** `Guardrail` 四档分支 + `AUTONOMY` 轴：supervised 走审批 / autonomous 按档策略 / 未授权立即升级（不卡 600s）
+- [x] **T4.** 高危尝试节流：按 `(tool,target)` 查 `audit_log` 派生计数（覆盖 recover+reversible）+ 冷却 + 超限升级
+- [x] **T5.** `reversible` 落地：`edit_remote_config` 先 `cp .bak.<ts>` 再改再 reload，sed 注入已用 `python3 -c`+`shlex.quote` 修复
+- [x] **T6.** `config`：`AUTONOMY=supervised|autonomous` 替换 `AUTO_APPROVE`（默认 supervised 安全）
+- [x] **T7.** Web API + 管理页面：`risk_rules` CRUD + 管理面"风险规则"页（irreversible 档禁勾 autonomous，后端双重强制）
+- [x] **T8.** 联调修复：熔断改类级跨会话共享；`_refine_restart` 加 10s 缓存；无人值守 DOWN 自动重启重试 / irreversible 拒绝并升级告警
 
 ---
 
-## 二、进行中 / 待实施 — §21 安全护栏分级自治
-
-> 设计见 `docs/DESIGN.md` §21。以下为落地清单。
-
-- [ ] **T1. `risk_rules` 表 + 迁移 + 种子** — schema 见 §21.3；首启若空从 `tools.py:TOOL_RISK` 灌默认
-- [ ] **T2. `classify()` 实现** — 查 `risk_rules`（TTL 缓存）+ `match_json` 命中 + fail-closed 兜底；替代静态 `TOOL_RISK`
-- [ ] **T3. `Guardrail` 四档分支 + `AUTONOMY` 轴** — `recover`/`reversible`/`irreversible`/`low|medium`；supervised 等人工，autonomous 按档策略
-- [ ] **T4. 高危尝试节流** — 按 `(tool,target)` 查 `audit_log` 派生计数（覆盖 recover+reversible）+ 冷却 + 超限升级
-- [ ] **T5. `reversible` 落地** — `edit_remote_config`：先 `cp file file.bak.<ts>` 再改再 reload，留回滚点
-- [ ] **T6. `config` `AUTONOMY` 模式** — 用 `AUTONOMY=supervised|autonomous` 替换 `AUTO_APPROVE`
-- [ ] **T7. Web API + 管理页面** — `risk_rules` CRUD + 管理面"风险规则"页（`irreversible` 档禁勾 `autonomous`）
-- [ ] **T8. 联调** — 无人值守端到端：DOWN 自动重启重试 / irreversible 拒绝并升级告警
-
----
-
-## 三、待做 — 其他领域
+## 二、待做 — 其他领域
 
 - [ ] **T9. 演示与提交（M7）** — 多故障剧本跑通 / 端到端录屏 / README 复现步骤+架构图 / 性能数据
 - [ ] **M5. 知识库 + 学习闭环** — sqlite-vec + bge-small(CPU) 检索 / `write_runbook` 回写 + 人工审核
