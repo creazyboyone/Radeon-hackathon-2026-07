@@ -10,7 +10,7 @@
 | 区块 | 状态 | 说明 |
 |---|---|---|
 | M1 推理基座 | ✅ 完成 | llama.cpp ROCm / 模型 / tool-calling / 性能基线 |
-| M2 工具层 + ReAct | ✅ 完成 | SSH+CM API 真实工具；docker 环境待切 |
+| M2 工具层 + ReAct | ✅ 完成 | SSH+CM API 真实工具；docker HA 集群已交付(Phase1 Step1+2) |
 | M3 编排层 | ✅ 完成 | Orchestrator / master / 子session / 抢占 |
 | M4 安全护栏（初版） | ✅ 完成 | 风险分级 / dry-run / 审批 / 审计 / 熔断 |
 | 缺陷修复轮次 | ✅ 完成 | 7 项核心缺陷 + 20 项静态审查 |
@@ -35,7 +35,9 @@
 - [x] `get_service_status` / `get_alerts` / `get_metrics` / `read_logs`（预压缩）/ `search_kb` / `restart_service`（CM API）/ `hdfs_admin`
 - [x] 手写 ReAct 循环跑通故障剧本
 - [x] docker-compose 3 节点 Hadoop + Prometheus + Alertmanager + Grafana — **Phase 1 Step 1 已交付**: HDFS HA(2NN+3DN+3JN+ZKFC) + YARN HA(2RM+3NM+JHS) + ZK quorum, MR Pi 验证通过.
-- [ ] Hive on Tez + HBase + MySQL (Phase 1 Step 2, 待做)
+- [x] Hive on Tez + HBase + MySQL — **Phase 1 Step 2 已交付**: Hive 4.2.0 (2HMS/2HS2/MR 引擎,create/insert/select 全验证), HBase 2.5.15 (2HM 互备/3RS,HDFS rootdir 初始化完成), MySQL 8.0 (metastore DB).
+- [ ] Hive on Tez 引擎修复 (AM container `add-opens` 兼容, 暂切 MR)
+- [ ] HBase shell 修复 (JRuby/Netty 兼容, 客户端问题)
 
 ### M3 — 编排层
 - [x] Orchestrator 常驻 + master 纯规则调度
@@ -172,6 +174,9 @@
 - 审批超时（现 10min）/ 巡检周期（现 5min）/ `-t` 线程（现 16，EPYC 128 线程可试 32）
 
 ## 其他遗留（仅记录）
-- 集群环境：临时 CDH 6.3.2（176/177/178）→ docker-compose
+- 集群环境：docker-compose 全 HA 已交付 (Phase1 Step1+2, 192.168.1.102)
+  - HDFS HA(2NN+3DN+3JN+2ZKFC) / YARN HA(2RM+3NM+1JHS) / Hive MR(2HMS+2HS2+MySQL) / HBase HA(2HM+3RS) / ZK quorum / Prometheus+Alertmanager+Grafana
+  - 已知待修: Tez 引擎(add-opens 兼容) / HBase shell(JRuby/Netty 兼容)
+- 旧集群：CDH 6.3.2（176/177/178）仍可用，agent 走 CM API（CLUSTER_BACKEND=cdh）
 - CM API 单角色操作不支持（v30 仅整服务 commands/restart），recover 按服务单位执行
 - MTP 已生效（`--spec-type draft-mtp --spec-draft-n-max 1`），最优参数经基准测试确认，+30% 加速
