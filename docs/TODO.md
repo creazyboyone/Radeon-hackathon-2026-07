@@ -34,7 +34,8 @@
 ### M2 — 工具层 + 单 session ReAct
 - [x] `get_service_status` / `get_alerts` / `get_metrics` / `read_logs`（预压缩）/ `search_kb` / `restart_service`（CM API）/ `hdfs_admin`
 - [x] 手写 ReAct 循环跑通故障剧本
-- [ ] docker-compose 3 节点 Hadoop + Prometheus + Alertmanager + Grafana（当前临时 CDH 6.3.2）
+- [x] docker-compose 3 节点 Hadoop + Prometheus + Alertmanager + Grafana — **Phase 1 Step 1 已交付**: HDFS HA(2NN+3DN+3JN+ZKFC) + YARN HA(2RM+3NM+JHS) + ZK quorum, MR Pi 验证通过.
+- [ ] Hive on Tez + HBase + MySQL (Phase 1 Step 2, 待做)
 
 ### M3 — 编排层
 - [x] Orchestrator 常驻 + master 纯规则调度
@@ -114,7 +115,7 @@
 - [ ] **健康总览 Dashboard** — Web 首页展示服务状态卡/活跃告警/最近 fix/autonomy 徽章
 
 ### P2 — 架构健壮性
-- [ ] **Orchestrator 独立线程 + 异常兜底** — 移出主线程，加 `try/except`+重试，防单次异常终止整个进程（含 Web）
+- [x] **Orchestrator 异常兜底** — 循环体 `try/except`+5s 退避重试，单轮 LLM 断连/CM 超时不再终止常驻进程；orch 主线程 + web daemon 线程，目标已达成未再拆独立线程
 - [ ] **审批不阻塞调度** — `supervised` 审批等待（现轮询 SQLite 最长 600s）改异步唤醒，或缩短超时并降级 reject，避免冻结 Orchestrator
 - [ ] **EventBus 孤儿队列清理** — WebSocket 异常断开时保证 `unsubscribe`，或队列加 TTL，防内存泄漏
 - [ ] **LLM 端点探活** — `LLMClient` 加 ping `/v1/models`，SSH 隧道断连时暂停 Orchestrator 并告警，而非静默失败传播到每次 Agent 迭代
