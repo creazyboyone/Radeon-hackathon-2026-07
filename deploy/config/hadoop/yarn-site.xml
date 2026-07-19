@@ -45,7 +45,7 @@
     <value>hadoop01:2181,hadoop02:2181,hadoop03:2181</value>
   </property>
 
-  <!-- NM 辅助服务 (Step 1: mapreduce_shuffle, Step 2 加 tez) -->
+  <!-- NM 辅助服务 (Tez 通过 mapreduce_shuffle 即可, 不需 tez_shuffle) -->
   <property>
     <name>yarn.nodemanager.aux-services</name>
     <value>mapreduce_shuffle</value>
@@ -65,5 +65,10 @@
   <property>
     <name>yarn.nodemanager.resource.memory-mb</name>
     <value>4096</value>
+  </property>
+  <!-- 调试: 容器退出后保留目录 600s, 便于查 launch_container.sh / prelaunch.err -->
+  <property>
+    <name>yarn.nodemanager.delete.debug-delay-sec</name>
+    <value>600</value>
   </property>
 </configuration>

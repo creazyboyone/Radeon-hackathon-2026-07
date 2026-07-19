@@ -1,7 +1,8 @@
 # =============================================================================
-# 自建镜像: Apache Hadoop 3.3.6 + Hive 3.1.3 + Tez 0.10.2 + HBase 2.4.17
+# 自建镜像: Apache Hadoop 3.3.6 + Hive 4.2.0 + Tez 0.10.2 + HBase 2.5.15
 #           + ZooKeeper 3.8.4 + supervisord + krb5-client
 # 一镜像多角色: NODE_ROLE 决定跑哪些 daemon (supervisord 选对应配置)
+# 双 JDK: JDK 8 (Hadoop/HBase/ZK) + JDK 21 (Hive 4.2.0)
 # Phase 1: 无 Kerberos; Phase 2: 加 Kerberos (krb5-client 已预装)
 # =============================================================================
 FROM ubuntu:22.04
@@ -22,7 +23,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       openssh-client bash \
     && rm -rf /var/lib/apt/lists/*
 
+# ---- JDK 21 (Hive 4.2.0 需要 Java 21, 离线 COPY 免网络) ----
+COPY tarballs/openlogic-openjdk-21.0.11+10-linux-x64.tar.gz /tmp/jdk21.tgz
+RUN tar -xzf /tmp/jdk21.tgz -C /usr/lib/jvm/ \
+    && mv /usr/lib/jvm/openlogic-openjdk-21.0.11+10-linux-x64 /usr/lib/jvm/java-21-openjdk-amd64 \
+    && rm /tmp/jdk21.tgz
+
 ENV JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
+ENV JAVA_HOME_8=/usr/lib/jvm/java-8-openjdk-amd64
+ENV JAVA_HOME_21=/usr/lib/jvm/java-21-openjdk-amd64
 ENV HADOOP_HOME=/opt/hadoop
 ENV HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop
 ENV HIVE_HOME=/opt/hive

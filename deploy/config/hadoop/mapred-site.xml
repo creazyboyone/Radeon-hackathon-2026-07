@@ -4,7 +4,7 @@
   <property>
     <name>mapreduce.framework.name</name>
     <value>yarn</value>
-    <description>Step 1 标准 MapReduce; Step 2 改为 yarn-tez</description>
+    <description>Hive on Tez: yarn-tez 模式</description>
   </property>
   <property>
     <name>mapreduce.jobhistory.address</name>
@@ -14,18 +14,18 @@
     <name>mapreduce.jobhistory.webapp.address</name>
     <value>hadoop01:19888</value>
   </property>
-  <!-- AM / Map / Reduce 容器中需设 HADOOP_MAPRED_HOME, 否则报 Could not find MRAppMaster -->
+  <!-- AM / Map / Reduce 容器需 JAVA_HOME=21 (Hive 4.2 注入 add-opens, Java 8 报 Unrecognized option) -->
   <property>
     <name>yarn.app.mapreduce.am.env</name>
-    <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
+    <value>HADOOP_MAPRED_HOME=/opt/hadoop,JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64</value>
   </property>
   <property>
     <name>mapreduce.map.env</name>
-    <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
+    <value>HADOOP_MAPRED_HOME=/opt/hadoop,JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64</value>
   </property>
   <property>
     <name>mapreduce.reduce.env</name>
-    <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
+    <value>HADOOP_MAPRED_HOME=/opt/hadoop,JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64</value>
   </property>
 
   <!-- AM / Map / Reduce 内存 (demo 保守值) -->
