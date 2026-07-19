@@ -20,8 +20,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       openjdk-8-jdk-headless supervisor netcat-openbsd dnsutils \
       curl wget ca-certificates python3 krb5-user libsnappy-dev \
-      openssh-client bash \
-    && rm -rf /var/lib/apt/lists/*
+      openssh-client openssh-server bash \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd
 
 # ---- JDK 21 (Hive 4.2.0 需要 Java 21, 离线 COPY 免网络) ----
 COPY tarballs/openlogic-openjdk-21.0.11+10-linux-x64.tar.gz /tmp/jdk21.tgz

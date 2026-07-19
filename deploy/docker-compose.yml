@@ -32,13 +32,20 @@ services:
       - ./config/hbase/hbase-site.xml:/opt/hbase/conf/hbase-site.xml:ro
       - ./image/hbase-wrapper.sh:/usr/local/bin/hbase:ro
       - ./image/supervisord/supervisord-hadoop01.conf:/etc/supervisor/conf.d/supervisord-hadoop01.conf:ro
+      - ./image/entrypoint.sh:/entrypoint.sh:ro
       - ./config/jmx-exporter:/opt/jmx-exporter:ro
+      - ./config/ssh/sshd_config:/ssh-config/sshd_config:ro
+      - ./config/ssh/authorized_keys:/ssh-config/authorized_keys:ro
+      - ./config/ssh/id_rsa:/ssh-config/id_rsa:ro
+      - ./config/ssh/id_rsa.pub:/ssh-config/id_rsa.pub:ro
+      - ./config/ssh/ssh_config:/ssh-config/ssh_config:ro
       - hadoop01-data:/data
       - hadoop01-logs:/logs
     networks:
       aiopsnet:
         ipv4_address: 10.20.0.11
     ports:
+      - "2222:22"     # SSH
       - "9870:9870"   # NN1 web
       - "8088:8088"   # RM1 web
       - "19888:19888" # JobHistory web
@@ -65,13 +72,20 @@ services:
       - ./config/hbase/hbase-site.xml:/opt/hbase/conf/hbase-site.xml:ro
       - ./image/hbase-wrapper.sh:/usr/local/bin/hbase:ro
       - ./image/supervisord/supervisord-hadoop02.conf:/etc/supervisor/conf.d/supervisord-hadoop02.conf:ro
+      - ./image/entrypoint.sh:/entrypoint.sh:ro
       - ./config/jmx-exporter:/opt/jmx-exporter:ro
+      - ./config/ssh/sshd_config:/ssh-config/sshd_config:ro
+      - ./config/ssh/authorized_keys:/ssh-config/authorized_keys:ro
+      - ./config/ssh/id_rsa:/ssh-config/id_rsa:ro
+      - ./config/ssh/id_rsa.pub:/ssh-config/id_rsa.pub:ro
+      - ./config/ssh/ssh_config:/ssh-config/ssh_config:ro
       - hadoop02-data:/data
       - hadoop02-logs:/logs
     networks:
       aiopsnet:
         ipv4_address: 10.20.0.12
     ports:
+      - "2223:22"     # SSH
       - "9871:9870"   # NN2 web (remapped, standby)
       - "8081:8088"   # RM2 web (remapped, standby)
       - "10001:10000" # HiveServer2 (remapped)
@@ -92,12 +106,20 @@ services:
       - ./config/hbase/hbase-site.xml:/opt/hbase/conf/hbase-site.xml:ro
       - ./image/hbase-wrapper.sh:/usr/local/bin/hbase:ro
       - ./image/supervisord/supervisord-hadoop03.conf:/etc/supervisor/conf.d/supervisord-hadoop03.conf:ro
+      - ./image/entrypoint.sh:/entrypoint.sh:ro
       - ./config/jmx-exporter:/opt/jmx-exporter:ro
+      - ./config/ssh/sshd_config:/ssh-config/sshd_config:ro
+      - ./config/ssh/authorized_keys:/ssh-config/authorized_keys:ro
+      - ./config/ssh/id_rsa:/ssh-config/id_rsa:ro
+      - ./config/ssh/id_rsa.pub:/ssh-config/id_rsa.pub:ro
+      - ./config/ssh/ssh_config:/ssh-config/ssh_config:ro
       - hadoop03-data:/data
       - hadoop03-logs:/logs
     networks:
       aiopsnet:
         ipv4_address: 10.20.0.13
+    ports:
+      - "2224:22"     # SSH
 
   # ========================================================
   # MySQL (Hive Metastore DB)
