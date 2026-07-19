@@ -24,9 +24,13 @@ services:
     volumes:
       - ./config/hadoop:/opt/hadoop/etc/hadoop:ro
       - ./config/zookeeper/zoo.cfg:/opt/zookeeper/conf/zoo.cfg:ro
+      - ./config/hive/hive-env.sh:/opt/hive/conf/hive-env.sh:ro
       - ./config/hive/hive-site.xml:/opt/hive/conf/hive-site.xml:ro
+      - ./image/beeline.sh:/opt/hive/bin/ext/beeline.sh:ro
       - ./config/tez/tez-site.xml:/opt/tez/conf/tez-site.xml:ro
+      - ./config/hbase/hbase-env.sh:/opt/hbase/conf/hbase-env.sh:ro
       - ./config/hbase/hbase-site.xml:/opt/hbase/conf/hbase-site.xml:ro
+      - ./image/hbase-wrapper.sh:/usr/local/bin/hbase:ro
       - ./image/supervisord/supervisord-hadoop01.conf:/etc/supervisor/conf.d/supervisord-hadoop01.conf:ro
       - hadoop01-data:/data
       - hadoop01-logs:/logs
@@ -52,9 +56,13 @@ services:
     volumes:
       - ./config/hadoop:/opt/hadoop/etc/hadoop:ro
       - ./config/zookeeper/zoo.cfg:/opt/zookeeper/conf/zoo.cfg:ro
+      - ./config/hive/hive-env.sh:/opt/hive/conf/hive-env.sh:ro
       - ./config/hive/hive-site.xml:/opt/hive/conf/hive-site.xml:ro
+      - ./image/beeline.sh:/opt/hive/bin/ext/beeline.sh:ro
       - ./config/tez/tez-site.xml:/opt/tez/conf/tez-site.xml:ro
+      - ./config/hbase/hbase-env.sh:/opt/hbase/conf/hbase-env.sh:ro
       - ./config/hbase/hbase-site.xml:/opt/hbase/conf/hbase-site.xml:ro
+      - ./image/hbase-wrapper.sh:/usr/local/bin/hbase:ro
       - ./image/supervisord/supervisord-hadoop02.conf:/etc/supervisor/conf.d/supervisord-hadoop02.conf:ro
       - hadoop02-data:/data
       - hadoop02-logs:/logs
@@ -78,7 +86,9 @@ services:
     volumes:
       - ./config/hadoop:/opt/hadoop/etc/hadoop:ro
       - ./config/zookeeper/zoo.cfg:/opt/zookeeper/conf/zoo.cfg:ro
+      - ./config/hbase/hbase-env.sh:/opt/hbase/conf/hbase-env.sh:ro
       - ./config/hbase/hbase-site.xml:/opt/hbase/conf/hbase-site.xml:ro
+      - ./image/hbase-wrapper.sh:/usr/local/bin/hbase:ro
       - ./image/supervisord/supervisord-hadoop03.conf:/etc/supervisor/conf.d/supervisord-hadoop03.conf:ro
       - hadoop03-data:/data
       - hadoop03-logs:/logs
