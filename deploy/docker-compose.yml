@@ -32,6 +32,7 @@ services:
       - ./config/hbase/hbase-site.xml:/opt/hbase/conf/hbase-site.xml:ro
       - ./image/hbase-wrapper.sh:/usr/local/bin/hbase:ro
       - ./image/supervisord/supervisord-hadoop01.conf:/etc/supervisor/conf.d/supervisord-hadoop01.conf:ro
+      - ./config/jmx-exporter:/opt/jmx-exporter:ro
       - hadoop01-data:/data
       - hadoop01-logs:/logs
     networks:
@@ -64,6 +65,7 @@ services:
       - ./config/hbase/hbase-site.xml:/opt/hbase/conf/hbase-site.xml:ro
       - ./image/hbase-wrapper.sh:/usr/local/bin/hbase:ro
       - ./image/supervisord/supervisord-hadoop02.conf:/etc/supervisor/conf.d/supervisord-hadoop02.conf:ro
+      - ./config/jmx-exporter:/opt/jmx-exporter:ro
       - hadoop02-data:/data
       - hadoop02-logs:/logs
     networks:
@@ -90,6 +92,7 @@ services:
       - ./config/hbase/hbase-site.xml:/opt/hbase/conf/hbase-site.xml:ro
       - ./image/hbase-wrapper.sh:/usr/local/bin/hbase:ro
       - ./image/supervisord/supervisord-hadoop03.conf:/etc/supervisor/conf.d/supervisord-hadoop03.conf:ro
+      - ./config/jmx-exporter:/opt/jmx-exporter:ro
       - hadoop03-data:/data
       - hadoop03-logs:/logs
     networks:

@@ -10,9 +10,12 @@ export PATH=$JAVA_HOME/bin:$PATH
 # Java 8 基础选项
 export HBASE_OPTS="-Djava.net.preferIPv4Stack=true"
 
+# JMX Exporter Java Agent (Prometheus metrics)
+JMX_AGENT="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-0.20.0.jar"
+
 # HBase Master / RegionServer 额外选项
-export HBASE_MASTER_OPTS="$HBASE_OPTS -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
-export HBASE_REGIONSERVER_OPTS="$HBASE_OPTS -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx2g"
+export HBASE_MASTER_OPTS="$HBASE_OPTS -XX:+UseG1GC -XX:MaxGCPauseMillis=200 ${JMX_AGENT}=10107:/opt/jmx-exporter/config.yml"
+export HBASE_REGIONSERVER_OPTS="$HBASE_OPTS -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx2g ${JMX_AGENT}=10108:/opt/jmx-exporter/config.yml"
 
 # HBase 日志目录
 export HBASE_LOG_DIR=/var/log/hbase
