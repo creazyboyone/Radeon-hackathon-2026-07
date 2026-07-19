@@ -45,8 +45,8 @@ cd web && npm install
 **Dependencies:**
 - Python 3.10+
 - Node.js 18+
-- An AMD Radeon GPU instance with ROCm support
-- A Hadoop/CDH cluster with Cloudera Manager API access
+- Docker 20.10+ with Docker Compose v2 (for Hadoop cluster)
+- An AMD Radeon GPU instance with ROCm support (for inference)
 
 ### 2. Remote Inference Server (AMD Radeon GPU)
 
@@ -85,6 +85,15 @@ AUTONOMY = "supervised"  # or "autonomous" for unattended mode
 
 ### 4. Launch
 
+**Start the Hadoop cluster (Docker):**
+```bash
+cd deploy
+bash up.sh                    # Build image + start containers
+bash scripts/init-cluster.sh  # First-time: format HDFS, bootstrap standby NN, start masters
+```
+See `deploy/README.md` for cluster details (HDFS/YARN/HBase HA, Grafana dashboards, SSH access).
+
+**Start the AIOps agent:**
 ```bash
 # Backend (API + WebSocket + orchestrator inspection loop)
 python main.py
@@ -99,10 +108,10 @@ cd web && npm run dev
 | Module | Status | Description |
 |--------|--------|-------------|
 | M1 Inference | ✅ | llama.cpp ROCm/HIPBLAS, Qwen27B Q4_K_M, MTP speculative decoding |
-| M2 Tool Layer | ✅ | CM API + SSH, 8 tools (6 read-only + restart_service + edit_remote_config) |
+| M2 Tool Layer | ✅ | SSH-based, 8 tools (6 read-only + restart_service + edit_remote_config), docker-compose Hadoop HA cluster |
 | M3 Orchestration | ✅ | Persistent orchestrator + /auto inspection + /fix preemption + SQLite persistence |
 | §21 Safety Guardrail | ✅ | Dual-axis four-tier (AUTONOMY × tier) + risk_rules DB + classify + attempt throttle |
-| M5 KB Retrieval | TODO | sqlite-vec + bge-small |
+| M5 KB Retrieval | ✅ | Hybrid: bge-small-zh vector + BM25 FTS5 (auto-fallback) |
 | M6 Web Console | ✅ | FastAPI+WebSocket backend, React+Vite+AntDesign frontend |
 | M7 Demo & Submission | TODO | Screen recording + performance data |
 
@@ -183,15 +192,8 @@ deploy/                # Docker cluster deployment (Hadoop HA + monitoring)
 ├── config/            # Hadoop/HBase/Hive/Tez/ZK/Grafana/Prometheus/SSH configs
 ├── scripts/           # Cluster init & daemon restart scripts
 └── tests/             # Hive end-to-end test SQL
-docs/DESIGN.md         # Detailed design doc (§21 safety guardrail, §22 gaps)
-docs/TODO.md           # Project progress overview
+docs/DESIGN.md         # Detailed design doc (§5 safety guardrail, §22 future features)
+docs/TODO.md           # Project checklist
 docs/README.md         # Project README (English, this file)
 docs/README_ZH.md      # Project README (Chinese)
 ```
-
-## End-to-End Verification
-
-| Round | Fault | Diagnosis | Remediation | Verification |
-|-------|-------|-----------|--------------|---------------|
-| 1 | DataNode stopped | ✅ 15-iteration ReAct | ❌ JAVA_HOME missing | — |
-| 2 | NameNode killed (SIGTERM) | ✅ logs→KB→rule-out-OOM→jps | ✅ CM API commands/start | ✅ hdfs_admin report |

@@ -63,6 +63,16 @@ AUTONOMY = "supervised"  # 或 "autonomous" (无人值守)
 ```
 
 ### 4. 启动
+
+**启动 Hadoop 集群 (Docker):**
+```bash
+cd deploy
+bash up.sh                    # 构建镜像 + 启动容器
+bash scripts/init-cluster.sh  # 首次: 格式化 HDFS, 引导备 NN, 启动 master 守护进程
+```
+集群详情见 `deploy/README.md` (HDFS/YARN/HBase HA, Grafana 仪表盘, SSH 访问)。
+
+**启动 AIOps Agent:**
 ```bash
 # 后端 (API + WebSocket + orchestrator 巡检)
 python main.py
@@ -77,10 +87,10 @@ cd web && npm run dev
 | 模块 | 状态 | 说明 |
 |---|---|---|
 | M1 推理基座 | ✅ | llama.cpp ROCm/HIPBLAS, Qwen27B Q4_K_M, MTP 投机解码 |
-| M2 工具层 | ✅ | CM API + SSH, 8 个工具 (6 只读 + restart_service + edit_remote_config) |
+| M2 工具层 | ✅ | SSH 工具层, 8 个工具 (6 只读 + restart_service + edit_remote_config), docker-compose Hadoop HA 集群 |
 | M3 编排层 | ✅ | Orchestrator 常驻 + /auto 巡检 + /fix 抢占 + SQLite 落库 |
 | §21 安全护栏 | ✅ | 双轴四档 (AUTONOMY × tier) + risk_rules DB + classify + attempt 节流 |
-| M5 KB 向量检索 | 待做 | sqlite-vec + bge-small |
+| M5 KB 检索 | ✅ | 混合检索: bge-small-zh 向量 + BM25 FTS5 (自动降级) |
 | M6 Web 控制台 | ✅ | FastAPI+WebSocket 后端, React+Vite+AntDesign 前端 |
 | M7 演示提交 | 待做 | 录屏 + 性能数据 |
 
@@ -161,15 +171,8 @@ deploy/                # Docker 集群部署 (Hadoop HA + 监控)
 ├── config/            # Hadoop/HBase/Hive/Tez/ZK/Grafana/Prometheus/SSH 配置
 ├── scripts/           # 集群初始化 & 守护进程重启脚本
 └── tests/             # Hive 端到端测试 SQL
-docs/DESIGN.md         # 详细设计文档 (§21 安全护栏, §22 商业差距)
-docs/TODO.md           # 项目进度总览
+docs/DESIGN.md         # 详细设计文档 (§5 安全护栏, §22 待实现特性)
+docs/TODO.md           # 项目 Checklist
 docs/README.md         # 项目说明 (英文)
 docs/README_ZH.md      # 项目说明 (中文, 本文件)
 ```
-
-## 端到端验证
-
-| 轮次 | 故障 | 诊断 | 修复 | 验证 |
-|---|---|---|---|---|
-| 第一轮 | DataNode 停 | ✅ 15 轮 ReAct | ❌ JAVA_HOME 缺失 | - |
-| 第二轮 | NameNode 停 (SIGTERM) | ✅ 查日志→查KB→排除OOM→查jps | ✅ CM API commands/start | ✅ hdfs_admin report |

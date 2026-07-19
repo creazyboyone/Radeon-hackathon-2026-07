@@ -114,6 +114,7 @@ bash scripts/restart-daemons.sh # Restart master daemons
 | HBase Master | http://localhost:16010 | — |
 | Grafana | http://localhost:3000 | admin / admin |
 | Prometheus | http://localhost:9090 | — |
+| SSH (hadoop01) | `ssh -p 2222 root@localhost` | Use `deploy/config/ssh/id_rsa` |
 
 ## Reset Cluster (Destroy All Data)
 
@@ -138,18 +139,25 @@ deploy/
 │   ├── hbase/                  # hbase-site, hbase-env
 │   ├── tez/                    # tez-site
 │   ├── zookeeper/              # zoo.cfg
-│   └── prometheus/             # prometheus.yml
+│   ├── prometheus/             # prometheus.yml (scrape configs)
+│   ├── grafana/                # Grafana provisioning (datasources + 4 dashboards)
+│   ├── jmx-exporter/           # JMX exporter agent jar + config
+│   └── ssh/                    # SSH keys + configs (container inter-node trust)
 ├── image/                      # Docker image build context
 │   ├── Dockerfile              # Single image, multi-role (NODE_ROLE env selects daemons)
-│   ├── entrypoint.sh           # Sets ZK myid + links Tez jars + starts supervisord
+│   ├── entrypoint.sh           # Sets ZK myid + links Tez jars + SSH setup + starts supervisord
+│   ├── beeline.sh              # Hive beeline helper script
+│   ├── hbase-wrapper.sh        # HBase startup wrapper
 │   ├── tarballs/               # Download packages here (see tarballs/README.md)
 │   └── supervisord/            # Per-node supervisord configs (which daemons to run)
 │       ├── supervisord-hadoop01.conf
 │       ├── supervisord-hadoop02.conf
 │       └── supervisord-hadoop03.conf
-└── scripts/
-    ├── init-cluster.sh         # First-time initialization (format + bootstrap + start)
-    └── restart-daemons.sh      # Non-first-time restart of master daemons
+├── scripts/
+│   ├── init-cluster.sh         # First-time initialization (format + bootstrap + start)
+│   └── restart-daemons.sh      # Non-first-time restart of master daemons
+└── tests/
+    └── hive_test.sql           # Hive end-to-end test (create/insert/select)
 ```
 
 ## Key Configuration Details
