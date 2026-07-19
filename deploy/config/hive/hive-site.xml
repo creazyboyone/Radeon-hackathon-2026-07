@@ -40,10 +40,10 @@
     <name>hive.server2.enable.doAs</name>
     <value>false</value>
   </property>
-  <!-- Tez 执行引擎 (调试中,暂用 mr, Tez 修复后切回 tez) -->
+  <!-- Tez 执行引擎 (add-opens 已配, AM/task 用 Java 21) -->
   <property>
     <name>hive.execution.engine</name>
-    <value>mr</value>
+    <value>tez</value>
   </property>
   <!-- 禁权限 (无 Kerberos) -->
   <property>

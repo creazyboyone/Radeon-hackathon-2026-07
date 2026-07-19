@@ -10,4 +10,11 @@ case "${NODE_ROLE}" in
 esac
 mkdir -p /data/zookeeper
 echo "${MYID}" > /data/zookeeper/myid
+
+# Hive 4.2 编译 Tez 计划需 Tez jar 在 classpath (tez.lib.uris 只供 AM 用, 编译期要本地 jar)
+# 启动前把 Tez jar 软链到 hive/lib (幂等, 容器每次启动都做)
+for j in /opt/tez/*.jar; do
+  ln -sf "$j" /opt/hive/lib/$(basename "$j") 2>/dev/null || true
+done
+
 exec supervisord -n -c "/etc/supervisor/conf.d/supervisord-${NODE_ROLE}.conf"

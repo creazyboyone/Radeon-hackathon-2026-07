@@ -71,4 +71,17 @@
     <name>yarn.nodemanager.delete.debug-delay-sec</name>
     <value>600</value>
   </property>
+  <!-- 日志聚合: yarn logs 可查容器 stdout/stderr -->
+  <property>
+    <name>yarn.log-aggregation-enable</name>
+    <value>true</value>
+  </property>
+  <property>
+    <name>yarn.nodemanager.remote-app-log-dir</name>
+    <value>/tmp/logs</value>
+  </property>
+  <property>
+    <name>yarn.log-aggregation.retain-seconds</name>
+    <value>86400</value>
+  </property>
 </configuration>
