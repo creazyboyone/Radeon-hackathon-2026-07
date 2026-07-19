@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+  <property>
+    <name>mapreduce.framework.name</name>
+    <value>yarn</value>
+    <description>Step 1 标准 MapReduce; Step 2 改为 yarn-tez</description>
+  </property>
+  <property>
+    <name>mapreduce.jobhistory.address</name>
+    <value>hadoop01:10020</value>
+  </property>
+  <property>
+    <name>mapreduce.jobhistory.webapp.address</name>
+    <value>hadoop01:19888</value>
+  </property>
+  <!-- AM / Map / Reduce 容器中需设 HADOOP_MAPRED_HOME, 否则报 Could not find MRAppMaster -->
+  <property>
+    <name>yarn.app.mapreduce.am.env</name>
+    <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
+  </property>
+  <property>
+    <name>mapreduce.map.env</name>
+    <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
+  </property>
+  <property>
+    <name>mapreduce.reduce.env</name>
+    <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
+  </property>
+
+  <!-- AM / Map / Reduce 内存 (demo 保守值) -->
+  <property>
+    <name>yarn.app.mapreduce.am.resource.mb</name>
+    <value>512</value>
+  </property>
+  <property>
+    <name>mapreduce.map.memory.mb</name>
+    <value>512</value>
+  </property>
+  <property>
+    <name>mapreduce.reduce.memory.mb</name>
+    <value>512</value>
+  </property>
+</configuration>
