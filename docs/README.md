@@ -173,7 +173,16 @@ web/                  # React + Vite + Ant Design
 │       └── KnowledgeBase.tsx  # Knowledge base (runbooks)
 main.py               # Entry point (FastAPI thread + orchestrator main thread)
 scripts/bootstrap.sh   # Remote inference server setup
-scripts/mtp_bench.py   # MTP benchmark script
+bench/                 # Inference performance benchmarks (tuning artifacts)
+├── llm_throughput.py    # LLM throughput benchmark (tokens/s, TTFT)
+├── llm_long_context.py # Long-context performance benchmark
+└── mtp_speculative.py   # MTP speculative decoding comparison
+deploy/                # Docker cluster deployment (Hadoop HA + monitoring)
+├── docker-compose.yml # 3-node Hadoop HA cluster + Prometheus + Grafana + SSH
+├── image/             # Dockerfile + entrypoint + supervisord configs
+├── config/            # Hadoop/HBase/Hive/Tez/ZK/Grafana/Prometheus/SSH configs
+├── scripts/           # Cluster init & daemon restart scripts
+└── tests/             # Hive end-to-end test SQL
 docs/DESIGN.md         # Detailed design doc (§21 safety guardrail, §22 gaps)
 docs/TODO.md           # Project progress overview
 docs/README.md         # Project README (English, this file)

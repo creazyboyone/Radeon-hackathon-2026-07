@@ -1,1 +1,0 @@
-{"model":"Qwopus3.6-27B","messages":[{"role":"user","content":"查HDFS DataNode状态"}],"tools":[{"type":"function","function":{"name":"get_service_status","description":"获取大数据服务状态","parameters":{"type":"object","properties":{"service":{"type":"string"}},"required":["service"]}}}],"tool_choice":"auto","max_tokens":512}

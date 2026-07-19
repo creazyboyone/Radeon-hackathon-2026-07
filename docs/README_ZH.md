@@ -147,10 +147,20 @@ web/                  # React + Vite + Ant Design
 │   └── components/
 │       ├── AgentActivity.tsx  # Agent 活动台
 │       ├── ApprovalCenter.tsx # 审批中心
-│       └── RiskRules.tsx      # 风险规则管理
+│       ├── RiskRules.tsx      # 风险规则管理
+│       └── KnowledgeBase.tsx  # 知识库 (runbooks)
 main.py               # 入口 (FastAPI 子线程 + orchestrator 主线程)
 scripts/bootstrap.sh   # 远程推理服务器初始化
-scripts/mtp_bench.py   # MTP 基准测试
+bench/                 # 推理性能基准测试 (调优产物)
+├── llm_throughput.py    # LLM 吞吐量基准 (tokens/s, TTFT)
+├── llm_long_context.py # 长上下文性能基准
+└── mtp_speculative.py   # MTP 投机解码对比测试
+deploy/                # Docker 集群部署 (Hadoop HA + 监控)
+├── docker-compose.yml # 3节点 Hadoop HA 集群 + Prometheus + Grafana + SSH
+├── image/             # Dockerfile + entrypoint + supervisord 配置
+├── config/            # Hadoop/HBase/Hive/Tez/ZK/Grafana/Prometheus/SSH 配置
+├── scripts/           # 集群初始化 & 守护进程重启脚本
+└── tests/             # Hive 端到端测试 SQL
 docs/DESIGN.md         # 详细设计文档 (§21 安全护栏, §22 商业差距)
 docs/TODO.md           # 项目进度总览
 docs/README.md         # 项目说明 (英文)
