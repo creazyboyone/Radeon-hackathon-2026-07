@@ -125,7 +125,7 @@ def create_app(store) -> FastAPI:
 
     @app.get("/api/cluster/snapshot")
     def cluster_snapshot():
-        from .tools import get_cluster_snapshot as snap
+        from ..tools import get_cluster_snapshot as snap
         return snap()
 
     # ---- 风险规则 CRUD (§21.3 / T7) ----

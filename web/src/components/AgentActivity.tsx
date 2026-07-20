@@ -28,6 +28,7 @@ const KIND_CFG: Record<string, { label: string; color: string; icon: any }> = {
   tool_result:       { label: '结果',   color: 'green',   icon: <ApiOutlined /> },
   user_input:        { label: '输入',   color: 'default', icon: <ThunderboltOutlined /> },
   final_answer:      { label: '完成',   color: 'success', icon: <CheckCircleOutlined /> },
+  runbook_prompt:    { label: '学习',   color: 'cyan',    icon: <CheckCircleOutlined /> },
 }
 
 function fmtTime(ts: number): string {
@@ -71,7 +72,7 @@ function extractResult(name: string, r: any): string {
 }
 
 // 判断事件是否为 Markdown 渲染类型
-const MD_KINDS = new Set(['reasoning', 'stream_reasoning', 'assistant', 'stream_content', 'final_answer', 'user_input'])
+const MD_KINDS = new Set(['reasoning', 'stream_reasoning', 'assistant', 'stream_content', 'final_answer', 'user_input', 'runbook_prompt'])
 const TOOL_KINDS = new Set(['tool_call', 'tool_result'])
 
 function AgentActivity() {
@@ -128,7 +129,7 @@ function AgentActivity() {
 
   useEffect(() => {
     fetchSessions()
-    const t = setInterval(fetchSessions, 5000)
+    const t = setInterval(fetchSessions, 2000)
     return () => clearInterval(t)
   }, [fetchSessions])
 
@@ -147,60 +148,100 @@ function AgentActivity() {
     }
   }, [sessions, selectedSid])
 
-  // WebSocket
+  // WebSocket — 独立于 selectedSid, 仅创建一次, 断线自动重连
   useEffect(() => {
-    const ws = new WebSocket(`ws://${location.host}/ws`)
-    wsRef.current = ws
-    ws.onopen = () => setConnected(true)
-    ws.onclose = () => setConnected(false)
-    ws.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        if (data.type !== 'agent_event') return
-        if (data.session_id !== selectedSid) {
-          if (data.kind === 'user_input') fetchSessions()
-          return
-        }
+    let ws: WebSocket | null = null
+    let reconnectTimer: number | null = null
+    let closed = false
 
-        // 流式事件: 追加到最后一个同类流式事件
-        if (data.kind === 'stream_reasoning' || data.kind === 'stream_content') {
-          autoScrollRef.current = true
-          setEvents(prev => {
-            const last = prev[prev.length - 1] as any
-            if (last && last.kind === data.kind) {
-              return [...prev.slice(0, -1), {
-                ...last,
-                content: { text: (last.content?.text || '') + data.content.text }
-              }]
+    const connect = () => {
+      ws = new WebSocket(`ws://${location.host}/ws`)
+      wsRef.current = ws
+
+      ws.onopen = () => setConnected(true)
+
+      ws.onclose = () => {
+        setConnected(false)
+        if (!closed) {
+          reconnectTimer = window.setTimeout(connect, 2000)
+        }
+      }
+
+      ws.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data)
+          if (data.type !== 'agent_event') return
+
+          const currentSid = selectedSidRef.current
+
+          // ---- 其他 session 的事件: 更新 session 列表, 不追加到 timeline ----
+          if (data.session_id !== currentSid) {
+            if (data.kind === 'user_input') {
+              fetchSessions()
+              // 自动切换到新 session (当前是 master / 已结束 / 未选择时)
+              const current = sessionsRef.current.find(s => s.id === currentSid)
+              if (!current || current.type === 'master' || current.ended_at) {
+                setSelectedSid(data.session_id)
+              }
+            } else if (data.kind === 'final_answer') {
+              fetchSessions()
             }
-            return [...prev, data]
-          })
-          return
-        }
+            return
+          }
 
-        // 完整事件: 替换最后一个流式事件
-        if (data.kind === 'reasoning' || data.kind === 'assistant') {
-          const streamKind = data.kind === 'reasoning' ? 'stream_reasoning' : 'stream_content'
-          setEvents(prev => {
-            const last = prev[prev.length - 1] as any
-            if (last && last.kind === streamKind) {
-              return [...prev.slice(0, -1), data]
-            }
-            return [...prev, data]
-          })
+          // ---- 当前 session 的事件 ----
+          // final_answer: 更新 session 状态 + 追加到 timeline
+          if (data.kind === 'final_answer') {
+            fetchSessions()
+          }
+
+          // 流式事件: 追加到最后一个同类流式事件
+          if (data.kind === 'stream_reasoning' || data.kind === 'stream_content') {
+            autoScrollRef.current = true
+            setEvents(prev => {
+              const last = prev[prev.length - 1] as any
+              if (last && last.kind === data.kind) {
+                return [...prev.slice(0, -1), {
+                  ...last,
+                  content: { text: (last.content?.text || '') + data.content.text }
+                }]
+              }
+              return [...prev, data]
+            })
+            return
+          }
+
+          // 完整事件: 替换最后一个流式事件
+          if (data.kind === 'reasoning' || data.kind === 'assistant') {
+            const streamKind = data.kind === 'reasoning' ? 'stream_reasoning' : 'stream_content'
+            setEvents(prev => {
+              const last = prev[prev.length - 1] as any
+              if (last && last.kind === streamKind) {
+                return [...prev.slice(0, -1), data]
+              }
+              return [...prev, data]
+            })
+            autoScrollRef.current = true
+            return
+          }
+
+          // 其他事件直接追加
           autoScrollRef.current = true
-          return
+          setEvents(prev => [...prev.slice(-300), data])
+        } catch (e) {
+          console.error('ws message parse error:', e)
         }
-
-        // 其他事件直接追加
-        autoScrollRef.current = true
-        setEvents(prev => [...prev.slice(-300), data])
-      } catch (e) {
-        console.error('ws message parse error:', e)
       }
     }
-    return () => ws.close()
-  }, [selectedSid, fetchSessions])
+
+    connect()
+
+    return () => {
+      closed = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      ws?.close()
+    }
+  }, [fetchSessions])
 
   // 只在用户在底部时自动滚动
   useEffect(() => {
