@@ -93,6 +93,8 @@ _DEFAULT_RISK_RULES = [
     ("rule_restart_service",   "restart_service",    None, "recover",  1, 1, 0),
     ("rule_edit_remote_config","edit_remote_config", None, "reversible", 1, 1, 0),
     ("rule_write_runbook",    "write_runbook",      None, "low",      1, 1, 0),
+    ("rule_diagnose_node",    "diagnose_node",      None, "low",      1, 1, 0),
+    ("rule_file_ops",         "file_ops",           None, "medium",   1, 1, 0),
     # fail-closed 默认: 未知工具一律不可逆 + 不自动
     ("rule_default",           "*",                  None, "irreversible", 0, 1, -1),
 ]

@@ -13,7 +13,8 @@ import uuid
 import logging
 import threading
 
-from .tools import execute_tool, cm_get, CM_CLUSTER, SERVICE_MAP
+from .config import CLUSTER_BACKEND
+from .tools import execute_tool, cm_get, CM_CLUSTER, SERVICE_MAP, ssh_exec
 
 logger = logging.getLogger(__name__)
 
@@ -111,14 +112,13 @@ class Guardrail:
 
         - STOPPED/DOWN/UNKNOWN → 维持 recover (重启不会更糟)
         - RUNNING 但不健康 → 降为 irreversible (不主动制造中断)
-        - 带 10s 缓存避免每次都打 CM API
+        - 带 10s 缓存避免每次都打 CM API / supervisorctl
+
+        CDH: CM API role state
+        Apache: supervisorctl status
         """
         svc = args.get("service", "")
         svc_info = SERVICE_MAP.get(svc, {})
-        cm_svc = svc_info.get("cm_service", "")
-        role_type = svc_info.get("cm_role_type", "")
-        if not cm_svc:
-            return tier, autonomous
 
         # 缓存检查
         cache_key = svc + ":" + (args.get("node", "") or "")
@@ -126,6 +126,21 @@ class Guardrail:
         cached = self._refine_cache.get(cache_key)
         if cached and now - cached[2] < self._refine_cache_ttl:
             return cached[0], cached[1]
+
+        if CLUSTER_BACKEND == "cdh":
+            result = self._cdh_refine_restart(svc, svc_info, args, tier, autonomous)
+        else:
+            result = self._apache_refine_restart(svc, svc_info, args, tier, autonomous)
+
+        self._refine_cache[cache_key] = (result[0], result[1], now)
+        return result
+
+    def _cdh_refine_restart(self, svc, svc_info, args, tier, autonomous):
+        """CDH: 通过 CM API 检查角色状态"""
+        cm_svc = svc_info.get("cm_service", "")
+        role_type = svc_info.get("cm_role_type", "")
+        if not cm_svc:
+            return tier, autonomous
 
         data = cm_get(f"/clusters/{CM_CLUSTER}/services/{cm_svc}/roles")
         target_node = args.get("node", "")
@@ -141,12 +156,59 @@ class Guardrail:
             if state in ("STOPPED", "DOWN", "UNKNOWN"):
                 continue  # 维持 recover
             # RUNNING 但不健康 → 不主动制造中断
-            result = TIER_IRREVERSIBLE, False
-            self._refine_cache[cache_key] = (result[0], result[1], now)
-            return result
-        result = tier, autonomous
-        self._refine_cache[cache_key] = (result[0], result[1], now)
-        return result
+            return TIER_IRREVERSIBLE, False
+        return tier, autonomous
+
+    def _apache_refine_restart(self, svc, svc_info, args, tier, autonomous):
+        """Apache: 通过 supervisorctl + jps 检查服务状态
+
+        - STOPPED/EXITED/FATAL/UNKNOWN/STARTING → 维持 recover (重启不会更糟)
+        - RUNNING + jps 检测到进程 → 降为 irreversible (不主动制造中断)
+        - RUNNING 但 jps 未检测到进程 → 维持 recover (僵尸状态, 需重启清理)
+
+        多节点服务(不指定 node): 只要有任一节点需要恢复, 就维持 recover
+        """
+        sup_prog = svc_info.get("supervisor_program")
+        if not sup_prog:
+            return tier, autonomous
+
+        java_class = svc_info.get("java_class")
+        target_node = args.get("node", "")
+        target_nodes = [target_node] if target_node else svc_info.get("nodes", [])
+
+        from .config import CLUSTER_NODES, JPS_BIN
+        from .tools import _node_supervisor_conf
+        all_running_healthy = True  # 所有节点都 RUNNING+进程存在 → IRREVERSIBLE
+        for n in target_nodes:
+            sup_conf = _node_supervisor_conf(n)
+            stdout, _, _ = ssh_exec(n, f"supervisorctl -c {sup_conf} status {sup_prog} 2>&1")
+            if stdout:
+                parts = stdout.split()
+                status = parts[1] if len(parts) >= 2 else "UNKNOWN"
+                if status in ("STOPPED", "EXITED", "FATAL", "UNKNOWN", "STARTING"):
+                    # 至少有一个节点需要恢复 → 维持 recover
+                    return tier, autonomous
+                if status == "RUNNING":
+                    # RUNNING 但需进一步检查进程是否真正存在
+                    # RunJar 类型 (Hive) 无法通过 jps 区分具体服务, 信任 supervisor
+                    if java_class and java_class != "RunJar":
+                        jps_out, _, _ = ssh_exec(n, f"{JPS_BIN} -l 2>/dev/null || jps -l 2>/dev/null")
+                        jps_short = java_class.rsplit(".", 1)[-1]
+                        process_found = any(java_class in l or jps_short in l
+                                           for l in (jps_out or "").split("\n") if l.strip())
+                        if not process_found:
+                            # 僵尸状态: supervisor 说 RUNNING 但进程不存在 → 允许重启
+                            logger.warning(f"{svc} on {n}: supervisor=RUNNING but process not detected (zombie), allowing restart")
+                            return tier, autonomous
+                    # 该节点 RUNNING + 进程存在 → 继续检查下一个节点
+                    continue
+            # 无法获取状态 → 维持 recover (保守)
+            all_running_healthy = False
+
+        # 所有节点都 RUNNING + 进程存在 → 不主动制造中断
+        if all_running_healthy:
+            return TIER_IRREVERSIBLE, False
+        return tier, autonomous
 
     # ============================================================
     # §21.4 execute — 四档分支
@@ -339,14 +401,20 @@ class Guardrail:
         svc_info = SERVICE_MAP.get(svc, {})
         nodes = [node] if node else svc_info.get("nodes", [])
         if tool_name == "restart_service":
+            if CLUSTER_BACKEND == "cdh":
+                action = f"CM API commands/start → 启动 {svc}"
+                impact = "仅启动 STOPPED 角色, 不影响运行中的"
+            else:
+                action = f"supervisorctl restart → 重启 {svc}"
+                impact = "重启指定节点的服务进程"
             return {
                 "tool": tool_name,
-                "action": f"CM API commands/start → 启动 {svc}",
+                "action": action,
                 "target_nodes": nodes,
                 "tier": TIER_RECOVER,
                 "reversible": True,
-                "impact": "仅启动 STOPPED 角色, 不影响运行中的",
-                "message": f"将启动 {svc} (nodes={nodes}) via CM API",
+                "impact": impact,
+                "message": f"将重启 {svc} (nodes={nodes})",
             }
         if tool_name == "edit_remote_config":
             return {
@@ -392,19 +460,8 @@ class Guardrail:
                      "pending", int(time.time()))
                 )
                 self.store.conn.commit()
-        
-        # 如果复用了已有审批，从这里开始等待
-            self.store.conn.execute(
-                "INSERT INTO approvals(id,session_id,tool_name,args_json,"
-                "risk_level,dry_run_json,status,ts) "
-                "VALUES(?,?,?,?,?,?,?,?)",
-                (approval_id, session_id, tool_name,
-                 json.dumps(args, ensure_ascii=False), tier,
-                 json.dumps(dry_run, ensure_ascii=False),
-                 "pending", int(time.time()))
-            )
-            self.store.conn.commit()
 
+        # 等待审批结果 (新创建或复用已有 pending 审批)
         poll_interval = 2
         waited = 0
         while waited < timeout:
