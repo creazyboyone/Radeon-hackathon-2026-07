@@ -6,11 +6,14 @@ import {
 import {
   RobotOutlined, SafetyOutlined, BellOutlined, UserOutlined,
   BulbFilled, BulbOutlined, LogoutOutlined, BookOutlined,
+  MessageOutlined,
 } from '@ant-design/icons'
 import AgentActivity from './components/AgentActivity'
 import ApprovalCenter from './components/ApprovalCenter'
 import RiskRules from './components/RiskRules'
 import KnowledgeBase from './components/KnowledgeBase'
+import ChatConsole from './components/ChatConsole'
+import { dataCache } from './dataCache'
 import './App.css'
 
 const { Sider, Header, Content } = Layout
@@ -59,15 +62,21 @@ function App() {
   useEffect(() => {
     const fetchPending = async () => {
       try {
-        const res = await fetch('/api/approvals?status=pending')
-        const data = await res.json()
+        const data = await dataCache.fetch<any[]>(
+          'approvals_pending',
+          async () => {
+            const res = await fetch('/api/approvals?status=pending')
+            return res.json()
+          },
+          5000 // 5秒缓存
+        )
         setPendingCount(Array.isArray(data) ? data.length : 0)
       } catch (e) {
         console.error('fetch pending approvals failed:', e)
       }
     }
     fetchPending()
-    const t = setInterval(fetchPending, 5000)
+    const t = setInterval(fetchPending, 10000) // 10秒轮询（而不是5秒）
     return () => clearInterval(t)
   }, [])
 
@@ -84,6 +93,7 @@ function App() {
 
   const menuItems = [
     { key: 'agent', icon: <RobotOutlined />, label: 'Agent 活动台' },
+    { key: 'chat', icon: <MessageOutlined />, label: '对话' },
     { key: 'approval', icon: <SafetyOutlined />, label: '审批中心' },
     { key: 'rules', icon: <BulbOutlined />, label: '风险规则' },
     { key: 'kb', icon: <BookOutlined />, label: '知识库' },
@@ -151,40 +161,41 @@ function App() {
             </Space>
           </Header>
 
-          <div style={{ padding: '8px 24px', flexShrink: 0 }}>
+          <div style={{ padding: '10px 24px 8px', flexShrink: 0 }}>
             <Breadcrumb items={[{ title: '首页' }, { title: currentLabel }]} />
           </div>
 
           {/* Content 用 flex:1 填满剩余空间, position:relative 让子元素 absolute 定位 */}
           <Content style={{
-            flex: 1, overflow: 'hidden', padding: 16,
+            flex: 1, overflow: 'hidden', padding: '12px 20px',
             position: 'relative', minHeight: 0,
           }}>
-            {/* 用 display 切换而非条件渲染, 避免 AgentActivity 卸载丢失 state */}
-            <div style={{
-              position: 'absolute', inset: 0,
-              display: tab === 'agent' ? 'flex' : 'none',
-            }}>
-              <AgentActivity />
-            </div>
-            <div style={{
-              position: 'absolute', inset: 0,
-              display: tab === 'approval' ? 'block' : 'none',
-            }}>
-              <ApprovalCenter />
-            </div>
-            <div style={{
-              position: 'absolute', inset: 0,
-              display: tab === 'rules' ? 'block' : 'none',
-            }}>
-              <RiskRules />
-            </div>
-            <div style={{
-              position: 'absolute', inset: 0,
-              display: tab === 'kb' ? 'block' : 'none',
-            }}>
-              <KnowledgeBase />
-            </div>
+            {/* 条件渲染: 只渲染当前标签页，切换时卸载其他组件释放内存 */}
+            {tab === 'agent' && (
+              <div style={{ position: 'absolute', inset: 0, display: 'flex' }}>
+                <AgentActivity />
+              </div>
+            )}
+            {tab === 'approval' && (
+              <div style={{ position: 'absolute', inset: 0 }}>
+                <ApprovalCenter />
+              </div>
+            )}
+            {tab === 'chat' && (
+              <div style={{ position: 'absolute', inset: 0, display: 'flex' }}>
+                <ChatConsole />
+              </div>
+            )}
+            {tab === 'rules' && (
+              <div style={{ position: 'absolute', inset: 0 }}>
+                <RiskRules />
+              </div>
+            )}
+            {tab === 'kb' && (
+              <div style={{ position: 'absolute', inset: 0 }}>
+                <KnowledgeBase />
+              </div>
+            )}
           </Content>
         </Layout>
       </Layout>

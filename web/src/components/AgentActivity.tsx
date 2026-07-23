@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, memo } from 'react'
 import {
   Tree, Timeline, Card, Tag, Typography, Badge, Spin, Collapse,
   Empty, Descriptions, Statistic,
@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { wsManager } from '../websocket'
 
 const { Text, Paragraph } = Typography
 
@@ -30,6 +31,10 @@ const KIND_CFG: Record<string, { label: string; color: string; icon: any }> = {
   final_answer:      { label: '完成',   color: 'success', icon: <CheckCircleOutlined /> },
   runbook_prompt:    { label: '学习',   color: 'cyan',    icon: <CheckCircleOutlined /> },
 }
+
+const MD_KINDS = new Set(['reasoning', 'stream_reasoning', 'assistant', 'stream_content', 'final_answer', 'user_input', 'runbook_prompt'])
+const TOOL_KINDS = new Set(['tool_call', 'tool_result'])
+
 
 function fmtTime(ts: number): string {
   return new Date(ts * 1000).toLocaleTimeString('zh-CN', { hour12: false })
@@ -71,10 +76,6 @@ function extractResult(name: string, r: any): string {
   return JSON.stringify(r).slice(0, 100)
 }
 
-// 判断事件是否为 Markdown 渲染类型
-const MD_KINDS = new Set(['reasoning', 'stream_reasoning', 'assistant', 'stream_content', 'final_answer', 'user_input', 'runbook_prompt'])
-const TOOL_KINDS = new Set(['tool_call', 'tool_result'])
-
 function AgentActivity() {
   const [sessions, setSessions] = useState<Session[]>([])
   const [selectedSid, setSelectedSid] = useState('')
@@ -83,7 +84,7 @@ function AgentActivity() {
   const [clusterSnap, setClusterSnap] = useState<any>(null)
   const [connected, setConnected] = useState(false)
   const [loading, setLoading] = useState(false)
-  const wsRef = useRef<WebSocket | null>(null)
+
   const scrollRef = useRef<HTMLDivElement>(null)
   const sessionsRef = useRef<Session[]>([])
   const selectedSidRef = useRef('')
@@ -129,7 +130,7 @@ function AgentActivity() {
 
   useEffect(() => {
     fetchSessions()
-    const t = setInterval(fetchSessions, 2000)
+    const t = setInterval(fetchSessions, 5000)
     return () => clearInterval(t)
   }, [fetchSessions])
 
@@ -148,99 +149,71 @@ function AgentActivity() {
     }
   }, [sessions, selectedSid])
 
-  // WebSocket — 独立于 selectedSid, 仅创建一次, 断线自动重连
+
+  // WebSocket — 使用全局单例, 不在此处创建独立连接
   useEffect(() => {
-    let ws: WebSocket | null = null
-    let reconnectTimer: number | null = null
-    let closed = false
+    const unsubscribe = wsManager.subscribe((data) => {
+      if (data.type === 'connection') {
+        setConnected(data.status === 'connected')
+        return
+      }
+      if (data.type !== 'agent_event') return
 
-    const connect = () => {
-      ws = new WebSocket(`ws://${location.host}/ws`)
-      wsRef.current = ws
+      const currentSid = selectedSidRef.current
 
-      ws.onopen = () => setConnected(true)
-
-      ws.onclose = () => {
-        setConnected(false)
-        if (!closed) {
-          reconnectTimer = window.setTimeout(connect, 2000)
+      if (data.session_id !== currentSid) {
+        if (data.kind === 'user_input') {
+          fetchSessions()
+          const current = sessionsRef.current.find(s => s.id === currentSid)
+          if (!current || current.type === 'master' || current.ended_at) {
+            setSelectedSid(data.session_id)
+          }
+        } else if (data.kind === 'final_answer') {
+          fetchSessions()
         }
+        return
       }
 
-      ws.onmessage = (e) => {
-        try {
-          const data = JSON.parse(e.data)
-          if (data.type !== 'agent_event') return
-
-          const currentSid = selectedSidRef.current
-
-          // ---- 其他 session 的事件: 更新 session 列表, 不追加到 timeline ----
-          if (data.session_id !== currentSid) {
-            if (data.kind === 'user_input') {
-              fetchSessions()
-              // 自动切换到新 session (当前是 master / 已结束 / 未选择时)
-              const current = sessionsRef.current.find(s => s.id === currentSid)
-              if (!current || current.type === 'master' || current.ended_at) {
-                setSelectedSid(data.session_id)
-              }
-            } else if (data.kind === 'final_answer') {
-              fetchSessions()
-            }
-            return
+      // 流式 token: 实时合并到 events
+      if (data.kind === 'stream_reasoning' || data.kind === 'stream_content') {
+        setEvents(prev => {
+          const last = prev[prev.length - 1] as any
+          if (last && last.kind === data.kind) {
+            return [...prev.slice(0, -1), {
+              ...last,
+              content: { text: (last.content?.text || '') + (data.content?.text || '') }
+            }]
           }
-
-          // ---- 当前 session 的事件 ----
-          // final_answer: 更新 session 状态 + 追加到 timeline
-          if (data.kind === 'final_answer') {
-            fetchSessions()
-          }
-
-          // 流式事件: 追加到最后一个同类流式事件
-          if (data.kind === 'stream_reasoning' || data.kind === 'stream_content') {
-            autoScrollRef.current = true
-            setEvents(prev => {
-              const last = prev[prev.length - 1] as any
-              if (last && last.kind === data.kind) {
-                return [...prev.slice(0, -1), {
-                  ...last,
-                  content: { text: (last.content?.text || '') + data.content.text }
-                }]
-              }
-              return [...prev, data]
-            })
-            return
-          }
-
-          // 完整事件: 替换最后一个流式事件
-          if (data.kind === 'reasoning' || data.kind === 'assistant') {
-            const streamKind = data.kind === 'reasoning' ? 'stream_reasoning' : 'stream_content'
-            setEvents(prev => {
-              const last = prev[prev.length - 1] as any
-              if (last && last.kind === streamKind) {
-                return [...prev.slice(0, -1), data]
-              }
-              return [...prev, data]
-            })
-            autoScrollRef.current = true
-            return
-          }
-
-          // 其他事件直接追加
-          autoScrollRef.current = true
-          setEvents(prev => [...prev.slice(-300), data])
-        } catch (e) {
-          console.error('ws message parse error:', e)
-        }
+          return [...prev, data]
+        })
+        autoScrollRef.current = true
+        return
       }
-    }
 
-    connect()
+      // 完整事件: 替换流式事件或追加
+      if (data.kind === 'reasoning' || data.kind === 'assistant') {
+        const streamKind = data.kind === 'reasoning' ? 'stream_reasoning' : 'stream_content'
+        setEvents(prev => {
+          const last = prev[prev.length - 1] as any
+          if (last && last.kind === streamKind) {
+            return [...prev.slice(0, -1), data]
+          }
+          return [...prev, data]
+        })
+        autoScrollRef.current = true
+        return
+      }
 
-    return () => {
-      closed = true
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-      ws?.close()
-    }
+      // 其他事件: 直接追加
+      setEvents(prev => [...prev, data])
+      autoScrollRef.current = true
+
+      if (data.kind === 'final_answer') {
+        fetchSessions()
+      }
+    })
+
+    return unsubscribe
   }, [fetchSessions])
 
   // 只在用户在底部时自动滚动
@@ -258,25 +231,22 @@ function AgentActivity() {
     }
   }
 
-  // Tree
   const roots = sessions.filter(s => !s.parent_id)
   const buildTree = (s: Session): any => {
     const children = sessions.filter(c => c.parent_id === s.id)
-    const labels: Record<string, string> = { master: '主控', auto: '巡检', fix: '修复' }
-    const colors: Record<string, string> = { master: 'processing', auto: 'blue', fix: 'warning' }
-    // 蓝点规则：1) 最新的活跃master  2) 最新master下的未结束巡检/修复
+    const labels: Record<string, string> = { master: '主控', auto: '巡检', fix: '修复', chat: '对话' }
+    const colors: Record<string, string> = { master: 'processing', auto: 'blue', fix: 'warning', chat: 'geekblue' }
     const latestMaster = sessions.find(x => x.type === 'master' && !x.ended_at)
     const isLatestMaster = s.type === 'master' && !s.ended_at && s.id === latestMaster?.id
-    // 只有最新master下的活跃巡检/修复才显示蓝点
-    const isActiveTask = (s.type === 'auto' || s.type === 'fix') && !s.ended_at && s.parent_id === latestMaster?.id
+    const isActiveTask = (s.type === 'auto' || s.type === 'fix' || s.type === 'chat') && !s.ended_at && s.parent_id === latestMaster?.id
     return {
       key: s.id,
       title: (
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Tag color={colors[s.type]} style={{ margin: 0, fontSize: 11 }}>{labels[s.type] || s.type}</Tag>
-          <Text style={{ fontSize: 11, color: '#94a3b8' }}>{fmtDateTime(s.started_at)}</Text>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 260 }}>
+          <Tag color={colors[s.type]} style={{ margin: 0, fontSize: 11, flexShrink: 0 }}>{labels[s.type] || s.type}</Tag>
+          <span style={{ fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap' }}>{fmtDateTime(s.started_at)}</span>
           {(isLatestMaster || isActiveTask) && <Badge status="processing" title="进行中" />}
-        </span>
+        </div>
       ),
       children: children.map(buildTree),
     }
@@ -288,7 +258,7 @@ function AgentActivity() {
     const services = clusterSnap.services || {}
     return (
       <div>
-        <Card size="small" style={{ marginBottom: 16 }}>
+        <Card size="small" style={{ marginBottom: 12 }}>
           <Statistic
             title="集群整体状态"
             value={clusterSnap.overall_health || 'UNKNOWN'}
@@ -313,16 +283,18 @@ function AgentActivity() {
     )
   }
 
+  // 渲染所有事件
+  const renderEvents = events
+
   return (
-    <div style={{ display: 'flex', gap: 16, height: '100%', overflow: 'hidden', padding: 4 }}>
-      {/* 左侧: Session 树 */}
+    <div style={{ display: 'flex', gap: 12, height: '100%', overflow: 'hidden', padding: 4 }}>
       <Card
         size="small"
-        style={{ width: 260, flexShrink: 0, height: '100%', display: 'flex', flexDirection: 'column' }}
+        style={{ width: 320, flexShrink: 0, height: '100%', display: 'flex', flexDirection: 'column' }}
         styles={{ body: { flex: 1, overflow: 'hidden', minHeight: 0, padding: '8px 12px' } }}
         title={<Badge status={connected ? 'success' : 'default'} text={connected ? '实时' : '离线'} />}
       >
-        <div style={{ height: '100%', overflow: 'auto' }}>
+        <div className="chat-session-list" style={{ height: '100%', overflow: 'auto' }}>
           {sessions.length === 0 ? <Empty description="无会话" /> : (
             <Tree
               treeData={treeData}
@@ -330,21 +302,21 @@ function AgentActivity() {
               onSelect={(keys) => keys[0] && setSelectedSid(keys[0] as string)}
               defaultExpandAll
               showLine
+              style={{ fontSize: 12 }}
             />
           )}
         </div>
       </Card>
 
-      {/* 右侧: 事件流 */}
       <Card
         size="small"
         style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column' }}
         styles={{ body: { flex: 1, overflow: 'hidden', minHeight: 0, padding: 0 } }}
         title={selectedSession
-          ? `${selectedSession.type === 'master' ? '主控' : selectedSession.type === 'auto' ? '巡检' : '修复'} ${fmtTime(selectedSession.started_at)}`
+          ? `${selectedSession.type === 'master' ? '主控' : selectedSession.type === 'auto' ? '巡检' : selectedSession.type === 'fix' ? '修复' : '对话'} ${fmtTime(selectedSession.started_at)}`
           : '请选择会话'}
       >
-        <div ref={scrollRef} onScroll={handleScroll} style={{ height: '100%', overflow: 'auto', padding: '8px 16px' }}>
+        <div ref={scrollRef} onScroll={handleScroll} className="chat-msg-list" style={{ height: '100%', overflow: 'auto', padding: '8px 16px' }}>
           {selectedSession?.type === 'master' ? (
             renderClusterSnap()
           ) : loading ? (
@@ -352,7 +324,7 @@ function AgentActivity() {
           ) : events.length === 0 ? (
             <Empty description="无事件" />
           ) : (
-            <Timeline items={events.map((evt: any, i) => {
+            <Timeline items={renderEvents.map((evt: any, i) => {
               const cfg = KIND_CFG[evt.kind] || { label: evt.kind, color: 'gray', icon: null }
               const content = evt.content || {}
               const isMD = MD_KINDS.has(evt.kind)
@@ -362,7 +334,14 @@ function AgentActivity() {
                 summary = `${content.name}(${extractCall(content.name, content.args || {})})`
               else if (evt.kind === 'tool_result')
                 summary = extractResult(content.name || '', content.result || content)
-              else if (content.text) summary = content.text
+              else if (evt.kind === 'assistant') {
+                // assistant 事件: 显示 text 或 tool_calls
+                const text = content.text || ''
+                const tools = content.tool_calls?.map((tc: any) => tc.name).join(', ') || ''
+                summary = text.trim() || tools
+              }
+              else if (typeof content.text === 'string' && content.text.trim().length > 0) 
+                summary = content.text
               else if (content.tool_calls?.length)
                 summary = content.tool_calls.map((tc: any) => tc.name).join(', ')
 
