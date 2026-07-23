@@ -34,4 +34,8 @@ for j in /opt/tez/*.jar; do
   ln -sf "$j" /opt/hive/lib/$(basename "$j") 2>/dev/null || true
 done
 
+# ---- 清理残留 PID 文件 (容器 stop/start 后旧 PID 可能被其他进程占用, 导致服务拒绝启动) ----
+rm -f /opt/hive/conf/hiveserver2.pid /opt/hive/conf/hivemetastore.pid 2>/dev/null || true
+rm -f /tmp/hadoop-root-*.pid 2>/dev/null || true
+
 exec supervisord -n -c "/etc/supervisor/conf.d/supervisord-${NODE_ROLE}.conf"
