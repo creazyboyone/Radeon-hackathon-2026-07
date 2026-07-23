@@ -106,13 +106,30 @@ class LLMClient:
                 if not line:
                     continue
                 line = line.decode("utf-8")
+                
+                # 只处理 data: 行，跳过其他 SSE 字段 (id:, event: 等)
+                # SSE 格式：data: 行包含 JSON 数据，其他字段(id:, event:)跳过
                 if line.startswith("data: "):
                     line = line[6:]
-                if line.strip() == "[DONE]":
+                elif line.startswith("data:"):
+                    line = line[5:]  # 处理没有空格的情况
+                elif line.startswith("id:") or line.startswith("event:"):
+                    # SSE 标准字段，但不是 JSON 数据，跳过
+                    continue
+                elif not line.strip():
+                    # 空行，跳过
+                    continue
+                    
+                line_stripped = line.strip()
+                if line_stripped == "[DONE]":
                     stream_done = True
                     break
+                    
                 try:
-                    chunk = json.loads(line)
+                    chunk = json.loads(line_stripped)
+                    # 检查是否有 choices
+                    if not chunk.get("choices"):
+                        continue
                     delta = chunk["choices"][0].get("delta", {})
 
                     c = delta.get("content", "")
@@ -120,7 +137,6 @@ class LLMClient:
                         content_buf += c
                         if on_chunk:
                             on_chunk({"type": "content", "text": c})
-
                     r = delta.get("reasoning_content", "")
                     if r:
                         reasoning_buf += r
@@ -140,7 +156,9 @@ class LLMClient:
                             if fn.get("arguments"):
                                 tool_calls_buf[idx]["arguments"] += fn["arguments"]
                 except Exception as e:
-                    logger.warning(f"stream parse error (line may be incomplete): {e}")
+                    # 调试: 记录问题行的前100字符
+                    preview = line[:100] if len(line) > 100 else line
+                    logger.warning(f"stream parse error: {e}, line preview: {repr(preview)}")
                     continue
         finally:
             resp.close()  # 确保流式连接被释放, 防止连接池卡死
