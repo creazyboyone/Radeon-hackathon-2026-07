@@ -53,11 +53,11 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_service_status",
-            "description": "获取大数据集群中某个服务的运行状态(含所有节点实例). 可选指定节点查看特定实例",
+            "description": "获取大数据集群服务的运行状态. 可查询单个服务或所有服务",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "service": {"type": "string", "description": "服务名: NameNode/DataNode/ResourceManager/NodeManager/HiveMetaStore/HiveServer2/HBaseMaster/RegionServer/ZooKeeper/JournalNode"},
+                    "service": {"type": "string", "description": "服务名: NameNode/DataNode/ResourceManager/NodeManager/HiveMetaStore/HiveServer2/HBaseMaster/RegionServer/ZooKeeper/JournalNode, 或 all 查询所有服务"},
                     "node": {"type": "string", "description": "节点名(可选), 如 hadoop03. 不指定则返回所有节点"},
                 },
                 "required": ["service"],
@@ -136,12 +136,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "hdfs_admin",
-            "description": "执行HDFS管理命令: dfsadmin -report / fsck / fsck_list_corrupt(列出坏块文件) / fsck_delete(删除坏块文件) / dfs -ls / dfs -du / safemode get / safemode leave. safemode_leave 用于退出 HDFS 安全模式, fsck_delete 用于删除坏块文件",
+            "description": "执行HDFS管理命令: dfsadmin -report / fsck / fsck_list_corrupt(列出坏块文件) / fsck_delete(删除坏块文件) / dfs -ls / dfs -du / safemode get / safemode leave / count_quota(查询配额) / set_quota(设置文件数配额) / set_space_quota(设置空间配额) / clr_quota(清除文件数配额) / clr_space_quota(清除空间配额). safemode_leave/fsck_delete/配额修改为写操作",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "description": "操作: report(集群报告)/fsck(文件系统检查)/fsck_list_corrupt(列出坏块文件)/fsck_delete(删除坏块文件)/ls(列目录)/du(目录大小)/safemode_get(查询安全模式状态)/safemode_leave(退出安全模式)"},
-                    "path": {"type": "string", "description": "HDFS路径, ls/du时必填"},
+                    "action": {"type": "string", "description": "操作: report(集群报告)/fsck(文件系统检查)/fsck_list_corrupt(列出坏块文件)/fsck_delete(删除坏块文件)/ls(列目录)/du(目录大小)/safemode_get(查询安全模式状态)/safemode_leave(退出安全模式)/count_quota(查询目录配额)/set_quota(设置文件数配额)/set_space_quota(设置空间配额)/clr_quota(清除文件数配额)/clr_space_quota(清除空间配额)"},
+                    "path": {"type": "string", "description": "HDFS路径, ls/du/count_quota/set_quota/set_space_quota/clr_quota/clr_space_quota时必填"},
+                    "quota": {"type": "string", "description": "配额值, set_quota时为文件数(如1000), set_space_quota时为空间大小(如500g/2t)"},
                 },
                 "required": ["action"],
             },
@@ -419,6 +420,26 @@ def _log_filename(service_info, hostname):
 @tool("get_service_status")
 def _get_service_status(service="", node=""):
     """获取服务运行状态 — CDH: CM API / Apache: jps + supervisorctl"""
+    # 支持 all 参数，批量查询所有服务
+    if service == "all":
+        results = {}
+        for svc_name in SERVICE_MAP.keys():
+            svc_info = SERVICE_MAP[svc_name]
+            if CLUSTER_BACKEND == "cdh":
+                results[svc_name] = _cdh_get_service_status(svc_info, svc_name, node)
+            else:
+                results[svc_name] = _apache_get_service_status(svc_info, svc_name, node)
+        # 统计整体健康状态
+        bad_services = [k for k, v in results.items() if v.get("overall_health") != "GOOD"]
+        overall = "BAD" if bad_services else "GOOD"
+        return {
+            "service": "all",
+            "overall_health": overall,
+            "services_count": len(results),
+            "bad_services": bad_services,
+            "details": results
+        }
+    
     svc_info = SERVICE_MAP.get(service)
     if not svc_info:
         return {"error": f"未知服务: {service}",
@@ -983,8 +1004,8 @@ def _apache_restart_service(svc_info, service, reason, node):
 
 
 @tool("hdfs_admin")
-def _hdfs_admin(action="", path="/"):
-    """执行 HDFS 管理命令 (只读 + safemode_leave)"""
+def _hdfs_admin(action="", path="/", quota=""):
+    """执行 HDFS 管理命令 (只读 + safemode_leave + quota 管理)"""
     user = "hdfs"
     # 选取 active NameNode 节点 (Apache: hadoop01; CDH: SERVICE_MAP 中 NameNode 的第一个节点)
     nn_node = SERVICE_MAP["NameNode"]["nodes"][0]
@@ -993,6 +1014,22 @@ def _hdfs_admin(action="", path="/"):
     if not path or not path.startswith("/") or ".." in path:
         path = "/"
     safe_path = shlex.quote(path)
+    # 安全: 校验 quota 参数 (允许数字+单位字母, 防注入)
+    import re
+    safe_quota = ""
+    if quota:
+        if re.match(r'^\d+[gGmMtTkKbB]?$', str(quota)):
+            safe_quota = str(quota)
+        else:
+            return {"error": f"非法 quota 参数: {quota}", "hint": "允许格式: 1000 / 500g / 2t"}
+
+    # 配额相关操作需要 path
+    _QUOTA_ACTIONS = {"count_quota", "set_quota", "set_space_quota", "clr_quota", "clr_space_quota"}
+    if action in _QUOTA_ACTIONS and (not path or path == "/"):
+        return {"error": f"操作 {action} 需要指定 path"}
+    # set 操作需要 quota
+    if action in ("set_quota", "set_space_quota") and not safe_quota:
+        return {"error": f"操作 {action} 需要指定 quota 参数"}
 
     if CLUSTER_BACKEND == "cdh":
         ip = _node_ip(nn_node)
@@ -1005,6 +1042,11 @@ def _hdfs_admin(action="", path="/"):
             "du": f"sudo -u {user} hdfs dfs -du -h {safe_path} 2>&1",
             "safemode_get": f"sudo -u {user} hdfs dfsadmin -safemode get 2>&1",
             "safemode_leave": f"sudo -u {user} hdfs dfsadmin -safemode leave 2>&1",
+            "count_quota": f"sudo -u {user} hdfs dfs -count -q {safe_path} 2>&1",
+            "set_quota": f"sudo -u {user} hdfs dfsadmin -setQuota {safe_quota} {safe_path} 2>&1",
+            "set_space_quota": f"sudo -u {user} hdfs dfsadmin -setSpaceQuota {safe_quota} {safe_path} 2>&1",
+            "clr_quota": f"sudo -u {user} hdfs dfsadmin -clrQuota {safe_path} 2>&1",
+            "clr_space_quota": f"sudo -u {user} hdfs dfsadmin -clrSpaceQuota {safe_path} 2>&1",
         }
     else:
         # Apache: 需设置 JAVA_HOME, 用 /opt/hadoop/bin/hdfs
@@ -1017,6 +1059,11 @@ def _hdfs_admin(action="", path="/"):
             "du": f"export JAVA_HOME={JAVA_HOME}; /opt/hadoop/bin/hdfs dfs -du -h {safe_path} 2>&1",
             "safemode_get": f"export JAVA_HOME={JAVA_HOME}; /opt/hadoop/bin/hdfs dfsadmin -safemode get 2>&1",
             "safemode_leave": f"export JAVA_HOME={JAVA_HOME}; /opt/hadoop/bin/hdfs dfsadmin -safemode leave 2>&1",
+            "count_quota": f"export JAVA_HOME={JAVA_HOME}; /opt/hadoop/bin/hdfs dfs -count -q {safe_path} 2>&1",
+            "set_quota": f"export JAVA_HOME={JAVA_HOME}; /opt/hadoop/bin/hdfs dfsadmin -setQuota {safe_quota} {safe_path} 2>&1",
+            "set_space_quota": f"export JAVA_HOME={JAVA_HOME}; /opt/hadoop/bin/hdfs dfsadmin -setSpaceQuota {safe_quota} {safe_path} 2>&1",
+            "clr_quota": f"export JAVA_HOME={JAVA_HOME}; /opt/hadoop/bin/hdfs dfsadmin -clrQuota {safe_path} 2>&1",
+            "clr_space_quota": f"export JAVA_HOME={JAVA_HOME}; /opt/hadoop/bin/hdfs dfsadmin -clrSpaceQuota {safe_path} 2>&1",
         }
 
     cmd = cmds.get(action)
@@ -1250,6 +1297,10 @@ def execute_tool(name: str, arguments: dict) -> dict:
         risk = RISK_MEDIUM
     elif name == "hdfs_admin" and arguments.get("action") == "fsck_delete":
         risk = RISK_MEDIUM
+    elif name == "hdfs_admin" and arguments.get("action") in (
+        "set_quota", "set_space_quota", "clr_quota", "clr_space_quota"
+    ):
+        risk = RISK_MEDIUM
     try:
         result = handler(**arguments)
         logger.info(f"TOOL {name} [risk={risk}] args={arguments} -> "
@@ -1266,6 +1317,8 @@ AUTO_TOOL_NAMES = [
     "read_logs", "search_kb", "hdfs_admin", "diagnose_node",
 ]
 FIX_TOOL_NAMES = AUTO_TOOL_NAMES + ["restart_service", "edit_remote_config", "write_runbook", "file_ops"]
+# 对话式运维: 全工具 (用户可直接请求修复操作, 高危走审批)
+CHAT_TOOL_NAMES = FIX_TOOL_NAMES
 
 
 def get_tool_definitions(names):
