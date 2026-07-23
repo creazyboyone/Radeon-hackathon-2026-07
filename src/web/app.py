@@ -263,6 +263,67 @@ def create_app(store) -> FastAPI:
                 pass
         return {"id": rb_id, "status": status, "reviewer": reviewer}
 
+    # ---- 对话式运维 Chat Mode (多 session) ----
+
+    @app.get("/api/chat/sessions")
+    def list_chat_sessions():
+        """获取所有 chat sessions"""
+        return store.get_chat_sessions()
+
+    @app.post("/api/chat/sessions")
+    def create_chat_session(body: dict = None):
+        """创建新的 chat session"""
+        title = (body or {}).get("title", "新对话")
+        return store.create_chat_session(title)
+
+    @app.delete("/api/chat/sessions/{sid}")
+    def delete_chat_session(sid: str):
+        """删除 chat session 及其所有消息"""
+        store.delete_chat_session(sid)
+        return {"ok": True}
+
+    @app.patch("/api/chat/sessions/{sid}")
+    def rename_chat_session(sid: str, body: dict):
+        """重命名 chat session"""
+        title = body.get("title", "")
+        if title:
+            store.rename_chat_session(sid, title)
+        return {"ok": True}
+
+    @app.get("/api/chat/sessions/{sid}/messages")
+    def get_session_messages(sid: str):
+        """获取指定 chat session 的所有消息 (正序)"""
+        return store.get_chat_messages_by_session(sid)
+
+    @app.post("/api/chat/sessions/{sid}/messages")
+    def send_session_message(sid: str, body: dict):
+        """在指定 chat session 中发送消息"""
+        user_msg = body.get("message", "").strip()
+        if not user_msg:
+            return JSONResponse(status_code=400, content={"detail": "message required"})
+        if len(user_msg) > 2000:
+            return JSONResponse(status_code=400, content={"detail": "message too long (max 2000 chars)"})
+        msg_id = store.create_chat_message(user_msg, chat_session_id=sid)
+        return {"id": msg_id, "status": "pending"}
+
+    @app.get("/api/chat/{msg_id}")
+    def get_chat_message(msg_id: str):
+        """查询单条聊天消息状态"""
+        with store.lock:
+            row = store.conn.execute(
+                "SELECT id, user_msg, status, session_id, reply, role, "
+                "chat_session_id, created_at, processed_at FROM chat_messages WHERE id=?",
+                (msg_id,),
+            ).fetchone()
+        if not row:
+            return JSONResponse(status_code=404, content={"detail": "not found"})
+        return {
+            "id": row[0], "user_msg": row[1], "status": row[2],
+            "session_id": row[3] or "", "reply": row[4] or "",
+            "role": row[5], "chat_session_id": row[6] or "",
+            "created_at": row[7], "processed_at": row[8],
+        }
+
     # ---- WebSocket ----
 
     @app.websocket("/ws")

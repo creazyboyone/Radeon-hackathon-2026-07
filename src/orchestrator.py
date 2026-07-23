@@ -1,6 +1,7 @@
 import json
 import time
 import logging
+import threading
 
 from .llm_client import LLMClient
 from .db import Store
@@ -38,6 +39,9 @@ class Orchestrator:
         # 停止标志: 信号 handler 设置后, 巡检循环自然退出 (优雅关闭)
         self._stop = False
 
+        # chat 独立线程 (与巡检并行, 不阻塞)
+        self._chat_thread = None
+
     def stop(self):
         """请求常驻循环优雅停止 (由信号 handler 调用)。"""
         self._stop = True
@@ -64,7 +68,13 @@ class Orchestrator:
         print(f"  告警系统: 仅进程存活检测 (快速路径)")
         print(f"  巡检升级: LLM 发现异常 → 自动触发 /fix")
         print(f"  >>> 你可以随时停掉服务/注入故障, agent 会自动检测并尝试修复 <<<")
+        print(f"  >>> 对话式运维在独立 Chat 页面, 与巡检并行 <<<")
         print(f"{'='*60}\n")
+
+        # 启动 chat 消费线程 (独立于巡检循环)
+        self._chat_thread = threading.Thread(
+            target=self._chat_loop, daemon=True, name="chat-worker")
+        self._chat_thread.start()
 
         cycle = 0
         while not self._stop and (max_cycles is None or cycle < max_cycles):
@@ -172,6 +182,69 @@ class Orchestrator:
         agent = ReActAgent(self.llm, self.store, mode="fix")
         result = agent.run(prompt, parent_id=self.master_sid, trigger=f"alert:{alert['alertname']}")
         print(f"\n>>> [T+{elapsed}s] 修复完成 <<<\n")
+
+    def _chat_loop(self):
+        """chat 消费线程: 独立于巡检主循环, 轮询 pending 消息并处理.
+
+        - 与 /auto /fix 并行, 不排队
+        - 支持多轮上下文: 按 chat_session_id 拉取历史
+        - 预创 agent session, 前端可实时获取思考链
+        """
+        logger.info("Chat worker thread started")
+
+        # 启动恢复: 重启后可能有残留的 processing 消息, 重置为 pending
+        with self.store.lock:
+            row = self.store.conn.execute(
+                "UPDATE chat_messages SET status='pending', session_id='' "
+                "WHERE status='processing'"
+            )
+            if row.rowcount > 0:
+                logger.info(f"Recovered {row.rowcount} stuck chat messages (processing -> pending)")
+            self.store.conn.commit()
+        while not self._stop:
+            try:
+                msgs = self.store.get_pending_chat_messages(limit=1)
+                if not msgs:
+                    time.sleep(1)
+                    continue
+
+                msg = msgs[0]
+                msg_id = msg["id"]
+                user_msg = msg["user_msg"]
+                chat_session_id = msg.get("chat_session_id")
+                elapsed = int(time.time() - self.start_time)
+                print(f"\n>>> [T+{elapsed}s] [CHAT] 收到用户消息: {user_msg[:80]}")
+
+                # 预创 agent session, 前端可立即获取 session_id 拉取思考链
+                agent_sid = self.store.create_session(
+                    session_type="chat", parent_id=self.master_sid,
+                    trigger=f"user_chat:{msg_id}")
+
+                # 标记 processing (绑定 agent_sid)
+                self.store.mark_chat_processing(msg_id, agent_sid)
+
+                # 按 chat_session 拉取多轮历史
+                history = []
+                if chat_session_id:
+                    history = self.store.get_chat_history_by_session(chat_session_id, limit=20)
+
+                # 运行 agent (使用预创 session)
+                agent = ReActAgent(self.llm, self.store, mode="chat")
+                result = agent.run_with_history(
+                    user_msg, history,
+                    parent_id=self.master_sid,
+                    trigger=f"user_chat:{msg_id}",
+                    session_id=agent_sid)
+
+                # 写入回复
+                self.store.finish_chat_message(msg_id, result[:8000])
+
+                print(f">>> [T+{elapsed}s] [CHAT] 对话完成 (agent_session={agent_sid}) <<<\n")
+            except Exception as e:
+                logger.exception(f"Chat worker error: {e}")
+                time.sleep(3)
+
+        logger.info("Chat worker thread stopped")
 
     @staticmethod
     def _backend_info():

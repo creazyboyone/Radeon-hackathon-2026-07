@@ -80,6 +80,25 @@ CREATE TRIGGER IF NOT EXISTS runbooks_au AFTER UPDATE ON runbooks BEGIN
     INSERT INTO runbooks_fts(rowid, title, content, tags)
     VALUES (new.rowid, new.title, new.content, COALESCE(new.tags, ''));
 END;
+-- M6: 对话式运维
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL DEFAULT '新对话',
+    created_at  INTEGER,
+    updated_at  INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id              TEXT PRIMARY KEY,
+    chat_session_id TEXT,                      -- 关联的 chat session
+    user_msg        TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending', -- pending / processing / done / error
+    session_id      TEXT,                      -- 关联的 agent session (ReAct 思考链)
+    reply           TEXT,
+    role            TEXT NOT NULL DEFAULT 'user',
+    created_at      INTEGER,
+    processed_at    INTEGER
+);
 """
 
 # 默认风险规则种子数据 (§21.3 — 首启若空则灌入)
@@ -221,10 +240,30 @@ class Store:
             "ON runbooks(status, source);"
             "CREATE INDEX IF NOT EXISTS idx_runbooks_tags "
             "ON runbooks(tags);"
+            "CREATE INDEX IF NOT EXISTS idx_chat_status "
+            "ON chat_messages(status, created_at);"
         )
         self._seed_risk_rules()
         self._seed_runbooks()
+        self._migrate_chat()
         self.conn.commit()
+
+    def _migrate_chat(self):
+        """M6 migration: chat_messages 加 role + chat_session_id 列"""
+        try:
+            cols = [r[1] for r in self.conn.execute("PRAGMA table_info(chat_messages)").fetchall()]
+            if "role" not in cols:
+                self.conn.execute(
+                    "ALTER TABLE chat_messages ADD COLUMN role TEXT NOT NULL DEFAULT 'user'"
+                )
+                logger.info("Migrated chat_messages: added 'role' column")
+            if "chat_session_id" not in cols:
+                self.conn.execute(
+                    "ALTER TABLE chat_messages ADD COLUMN chat_session_id TEXT"
+                )
+                logger.info("Migrated chat_messages: added 'chat_session_id' column")
+        except Exception as e:
+            logger.warning(f"chat migration skipped: {e}")
 
     @property
     def lock(self):
@@ -553,5 +592,136 @@ class Store:
         return [
             {"id": r[0], "title": r[1], "content": r[2], "tags": r[3] or "",
              "embedding": r[4]}
+            for r in rows
+        ]
+
+    # ---- chat_sessions + chat_messages (多 session 对话式运维) ----
+
+    def create_chat_session(self, title: str = "新对话") -> dict:
+        """创建新的 chat session"""
+        sid = str(uuid.uuid4())[:8]
+        now = int(time.time())
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO chat_sessions(id,title,created_at,updated_at) "
+                "VALUES(?,?,?,?)",
+                (sid, title, now, now),
+            )
+            self.conn.commit()
+        return {"id": sid, "title": title, "created_at": now, "updated_at": now}
+
+    def get_chat_sessions(self) -> list:
+        """获取所有 chat sessions (按 updated_at 倒序)"""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT s.id, s.title, s.created_at, s.updated_at, "
+                "(SELECT COUNT(*) FROM chat_messages WHERE chat_session_id=s.id) AS msg_count "
+                "FROM chat_sessions s ORDER BY s.updated_at DESC"
+            ).fetchall()
+        return [
+            {"id": r[0], "title": r[1], "created_at": r[2],
+             "updated_at": r[3], "msg_count": r[4]}
+            for r in rows
+        ]
+
+    def delete_chat_session(self, sid: str):
+        """删除 chat session 及其所有消息"""
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM chat_messages WHERE chat_session_id=?", (sid,))
+            self.conn.execute("DELETE FROM chat_sessions WHERE id=?", (sid,))
+            self.conn.commit()
+
+    def rename_chat_session(self, sid: str, title: str):
+        with self._lock:
+            self.conn.execute(
+                "UPDATE chat_sessions SET title=?, updated_at=? WHERE id=?",
+                (title, int(time.time()), sid),
+            )
+            self.conn.commit()
+
+    def create_chat_message(self, user_msg: str, chat_session_id: str = None) -> str:
+        """用户提交聊天消息, 返回 msg_id"""
+        msg_id = str(uuid.uuid4())[:8]
+        now = int(time.time())
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO chat_messages(id,chat_session_id,user_msg,status,role,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (msg_id, chat_session_id, user_msg, "pending", "user", now),
+            )
+            if chat_session_id:
+                self.conn.execute(
+                    "UPDATE chat_sessions SET updated_at=? WHERE id=?",
+                    (now, chat_session_id),
+                )
+            self.conn.commit()
+        return msg_id
+
+    def get_pending_chat_messages(self, limit: int = 1) -> list:
+        """获取 pending 状态的聊天消息 (FIFO)"""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id, user_msg, chat_session_id FROM chat_messages "
+                "WHERE status='pending' ORDER BY created_at ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [{"id": r[0], "user_msg": r[1], "chat_session_id": r[2]} for r in rows]
+
+    def mark_chat_processing(self, msg_id: str, agent_session_id: str):
+        """标记消息为 processing, 关联 agent session_id"""
+        with self._lock:
+            self.conn.execute(
+                "UPDATE chat_messages SET status='processing', session_id=?, "
+                "processed_at=? WHERE id=?",
+                (agent_session_id, int(time.time()), msg_id),
+            )
+            self.conn.commit()
+
+    def finish_chat_message(self, msg_id: str, reply: str, status: str = "done"):
+        """消息处理完成, 写入回复"""
+        with self._lock:
+            self.conn.execute(
+                "UPDATE chat_messages SET status=?, reply=? WHERE id=?",
+                (status, reply, msg_id),
+            )
+            self.conn.execute(
+                "UPDATE chat_sessions SET updated_at=? WHERE id IN "
+                "(SELECT chat_session_id FROM chat_messages WHERE id=?)",
+                (int(time.time()), msg_id),
+            )
+            self.conn.commit()
+
+    def get_chat_history_by_session(self, chat_session_id: str, limit: int = 20) -> list:
+        """获取指定 chat session 的历史 (正序, 供多轮上下文拼接)
+        返回 [{role, content}, ...], 只含已完成的 user+assistant 消息"""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT user_msg, reply FROM chat_messages "
+                "WHERE chat_session_id=? AND status='done' "
+                "ORDER BY created_at DESC LIMIT ?",
+                (chat_session_id, limit),
+            ).fetchall()
+        rows = list(reversed(rows))
+        history = []
+        for r in rows:
+            history.append({"role": "user", "content": r[0]})
+            if r[1]:
+                history.append({"role": "assistant", "content": r[1]})
+        return history
+
+    def get_chat_messages_by_session(self, chat_session_id: str) -> list:
+        """获取指定 chat session 的所有消息 (正序, 供前端展示)"""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id, user_msg, status, session_id, reply, role, "
+                "created_at, processed_at FROM chat_messages "
+                "WHERE chat_session_id=? ORDER BY created_at ASC",
+                (chat_session_id,),
+            ).fetchall()
+        return [
+            {"id": r[0], "user_msg": r[1], "status": r[2],
+             "session_id": r[3] or "", "reply": r[4] or "",
+             "role": r[5], "created_at": r[6], "processed_at": r[7] or 0}
             for r in rows
         ]
