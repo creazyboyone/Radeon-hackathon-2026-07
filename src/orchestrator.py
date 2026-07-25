@@ -61,14 +61,10 @@ class Orchestrator:
         self.master_sid = self.store.create_session(
             session_type="master", trigger="orchestrator")
         print(f"\n{'='*60}")
-        print(f"  Orchestrator 启动 (master session={self.master_sid})")
-        print(f"  巡检间隔={self.inspect_interval}s")
-        print(f"  集群后端: {self._backend_info()}")
-        print(f"  模式: 循环巡检, 等待用户手动注入故障")
-        print(f"  告警系统: 仅进程存活检测 (快速路径)")
-        print(f"  巡检升级: LLM 发现异常 → 自动触发 /fix")
-        print(f"  >>> 你可以随时停掉服务/注入故障, agent 会自动检测并尝试修复 <<<")
-        print(f"  >>> 对话式运维在独立 Chat 页面, 与巡检并行 <<<")
+        print(f"  AIOps Agent Started (master={self.master_sid})")
+        print(f"  Inspect interval: {self.inspect_interval}s")
+        print(f"  Backend: {self._backend_info()}")
+        print(f"  Mode: Auto inspection with LLM-driven anomaly detection")
         print(f"{'='*60}\n")
 
         # 启动 chat 消费线程 (独立于巡检循环)
@@ -82,43 +78,34 @@ class Orchestrator:
             elapsed = int(time.time() - self.start_time)
 
             try:
-                # 检查告警 -> 抢占
+                # Check alerts -> trigger fix
                 alerts = get_pending_alerts()
                 if alerts:
                     alert = alerts[0]
-                    print(f"\n>>> [T+{elapsed}s] 检测到告警: {alert['alertname']} "
-                          f"severity={alert['severity']}")
-                    if alert.get('node'):
-                        print(f">>> 节点: {alert['node']}, 状态: {alert.get('roleState','')}")
-                    print(f">>> 启动 /fix (抢占巡检) <<<\n")
+                    print(f"\n>>> [T+{elapsed}s] Alert: {alert['alertname']} ({alert['severity']})")
                     self._run_fix(alert, elapsed)
-                    # fix 完成后等待状态更新 (supervisorctl/CM API)
-                    print(f">>> 等待 {self.post_fix_delay}s 让状态更新...")
                     time.sleep(self.post_fix_delay)
-                    # fix 完成后强制立即巡检验证
                     self.last_inspect = 0
                     continue
 
-                # 到点巡检
+                # Scheduled inspection
                 if time.time() - self.last_inspect >= self.inspect_interval:
-                    print(f"\n>>> [T+{elapsed}s] 定时巡检 -> 启动 /auto <<<\n")
+                    print(f"\n>>> [T+{elapsed}s] Starting inspection /auto\n")
                     self._run_auto(elapsed)
                     self.last_inspect = time.time()
                     continue
             except Exception as e:
-                # 单轮异常 (LLM 断连 / CM API 超时等) 不终止常驻循环, 记录后退避重试
-                logger.exception(f"[T+{elapsed}s] 调度轮次异常, 跳过本轮: {e}")
+                logger.exception(f"[T+{elapsed}s] Cycle error: {e}")
                 time.sleep(5)
                 continue
 
             time.sleep(2)
 
-        # 收尾: master session 标记为 done (供 Web 回看)
         if self.master_sid:
             self.store.finish_session(self.master_sid, summary="stopped", status="done")
-        reason = "收到停止信号" if self._stop else "达到最大轮数"
+        reason = "stopped" if self._stop else "max cycles"
         print(f"\n{'='*60}")
-        print(f"  Orchestrator 停止 ({reason}, 共 {cycle} 轮)")
+        print(f"  Agent stopped ({reason}, {cycle} cycles)")
         print(f"{'='*60}")
 
     def _run_auto(self, elapsed):
@@ -142,17 +129,15 @@ class Orchestrator:
             "cluster": snapshot_after,
             "summary": result[:200],
         })
-        print(f"\n>>> [T+{elapsed}s] 巡检完成, 状态卡已保存 <<<\n")
+        print(f"\n>>> [T+{elapsed}s] Inspection done <<<\n")
 
-        # 巡检升级: LLM 发现异常 → 自动触发 /fix
+        # Auto-upgrade to /fix if anomaly detected
         if result and result.strip().startswith("ANOMALY_DETECTED"):
             lines = result.strip().split("\n", 2)
-            anomaly_brief = lines[1].strip() if len(lines) > 1 else "巡检发现异常"
+            anomaly_brief = lines[1].strip() if len(lines) > 1 else "Anomaly detected"
             anomaly_detail = lines[2].strip() if len(lines) > 2 else result[:500]
-            print(f"\n>>> [T+{elapsed}s] 巡检发现异常: {anomaly_brief}")
-            print(f">>> 自动升级为 /fix 修复流程 <<<\n")
+            print(f"\n>>> [T+{elapsed}s] Anomaly: {anomaly_brief}")
 
-            # 构造虚拟告警, 复用 _run_fix 流程
             synthetic_alert = {
                 "alertname": "INSPECTION_ANOMALY",
                 "severity": "critical",
@@ -160,10 +145,8 @@ class Orchestrator:
                 "detail": anomaly_detail,
             }
             self._run_fix(synthetic_alert, elapsed)
-            # fix 完成后等待状态更新
-            print(f">>> 等待 {self.post_fix_delay}s 让状态更新...")
             time.sleep(self.post_fix_delay)
-            self.last_inspect = 0  # 强制下一轮立即巡检验证
+            self.last_inspect = 0
 
     def _run_fix(self, alert, elapsed):
         """修复子session - 一次性 context, 全工具(含高危)"""
@@ -181,7 +164,7 @@ class Orchestrator:
 
         agent = ReActAgent(self.llm, self.store, mode="fix")
         result = agent.run(prompt, parent_id=self.master_sid, trigger=f"alert:{alert['alertname']}")
-        print(f"\n>>> [T+{elapsed}s] 修复完成 <<<\n")
+        print(f"\n>>> [T+{elapsed}s] Fix done <<<\n")
 
     def _chat_loop(self):
         """chat 消费线程: 独立于巡检主循环, 轮询 pending 消息并处理.
@@ -213,7 +196,7 @@ class Orchestrator:
                 user_msg = msg["user_msg"]
                 chat_session_id = msg.get("chat_session_id")
                 elapsed = int(time.time() - self.start_time)
-                print(f"\n>>> [T+{elapsed}s] [CHAT] 收到用户消息: {user_msg[:80]}")
+                print(f"\n>>> [T+{elapsed}s] [CHAT] {user_msg[:80]}")
 
                 # 预创 agent session, 前端可立即获取 session_id 拉取思考链
                 agent_sid = self.store.create_session(
@@ -239,7 +222,7 @@ class Orchestrator:
                 # 写入回复
                 self.store.finish_chat_message(msg_id, result[:8000])
 
-                print(f">>> [T+{elapsed}s] [CHAT] 对话完成 (agent_session={agent_sid}) <<<\n")
+                print(f">>> [T+{elapsed}s] [CHAT] Done <<<\n")
             except Exception as e:
                 logger.exception(f"Chat worker error: {e}")
                 time.sleep(3)

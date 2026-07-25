@@ -21,7 +21,7 @@ logger = logging.getLogger("main")
 
 
 def run_web(store):
-    """子线程运行 FastAPI web 控制台"""
+    """Run FastAPI web console in child thread"""
     import uvicorn
     from src.web.app import create_app
     app = create_app(store)
@@ -30,40 +30,32 @@ def run_web(store):
 
 
 def main():
-    logger.info(f"LLM: {LLM_BASE_URL} model={LLM_MODEL}")
+    logger.info(f"LLM: {LLM_BASE_URL} | Model: {LLM_MODEL}")
     logger.info(f"DB: {DB_PATH}")
 
     llm = LLMClient(LLM_BASE_URL, LLM_API_KEY, LLM_MODEL)
     store = Store(DB_PATH)
-
-    # M5: 注入 store 到 tools 模块, 供 search_kb / write_runbook 访问知识库
     set_store(store)
 
-    # 启动 web 控制台 (子线程)
+    # Start web console (background thread)
     web_thread = threading.Thread(
         target=run_web, args=(store,), daemon=True)
     web_thread.start()
     logger.info("Web console: http://localhost:8000")
-    logger.info("  API: /api/sessions /api/approvals /api/audit")
-    logger.info("  WS:  /ws (agent events)")
 
-    # 主线程: Orchestrator 循环巡检
-    orch = Orchestrator(
-        llm, store,
-        inspect_interval=15,
-    )
+    # Main thread: Orchestrator inspection loop
+    orch = Orchestrator(llm, store, inspect_interval=15)
 
-    # 优雅关闭: 第一次信号设停止标志, 巡检循环自然退出; 再次中断则强制退出
-    # 不用 sys.exit() 强杀 daemon (会触发 uvicorn 线程池关闭中途的 RuntimeError)
+    # Graceful shutdown
     stop_requested = [False]
 
     def _shutdown(signum, frame):
         if not stop_requested[0]:
             stop_requested[0] = True
-            logger.info(f"收到信号 {signum}, 正在优雅停止... (再次中断可强制退出)")
+            logger.info(f"Signal {signum} received, shutting down...")
             orch.stop()
         else:
-            logger.info("强制退出")
+            logger.info("Force exit")
             if orch.master_sid:
                 store.finish_session(orch.master_sid, summary="interrupted", status="done")
             raise SystemExit(1)
@@ -71,10 +63,10 @@ def main():
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    orch.run()  # 常驻: 默认无限巡检, 收到信号后优雅退出
+    orch.run()
 
-    # 打印 session 树
-    logger.info("Session 树:")
+    # Print session tree on exit
+    logger.info("Session tree:")
     with store.lock:
         rows = store.conn.execute(
             "SELECT id, parent_id, type, status FROM sessions ORDER BY started_at"
