@@ -27,6 +27,11 @@ CONSOLE_TOKEN = os.getenv("CONSOLE_TOKEN", "")
 # autonomous: 无人值守, 按安全护栏四档策略自动执行
 AUTONOMY = os.getenv("AUTONOMY", "supervised").lower()
 
+# ---- 提示词语言 ----
+# en: English (default)
+# zh: 中文
+PROMPT_LANGUAGE = os.getenv("PROMPT_LANGUAGE", "en").lower()
+
 MAX_REACT_ITERATIONS = 15
 # 推理模型(reasoning_content)需要更多token: 思考过程+实际回答
 # 实测一次工具调用决策约消耗 500-1500 tokens (含reasoning)
@@ -156,20 +161,6 @@ SERVICE_MAP = {
         "java_class": "org.apache.hadoop.hdfs.server.namenode.NameNode",
         "log_file": "/logs/nn.log",
         "jmx_port": 10101,
-    },
-    "SecondaryNameNode": {
-        "cm_service": "hdfs",
-        "cm_role_type": "SECONDARYNAMENODE",
-        "log_dir": "/var/log/hadoop-hdfs",
-        "log_prefix": "hadoop-cmf-hdfs-SECONDARYNAMENODE",
-        "nodes": ["hadoop01"],
-        "run_user": "hdfs",
-        "core": False,
-        # Apache: HA 模式无 SNN (用 Standby NN 替代)
-        "supervisor_program": None,
-        "java_class": "org.apache.hadoop.hdfs.server.secondarynamenode.SecondaryNameNode",
-        "log_file": "/logs/snn.log",
-        "jmx_port": None,
     },
     "DataNode": {
         "cm_service": "hdfs",
@@ -315,21 +306,6 @@ SERVICE_MAP = {
         "java_class": "org.apache.hadoop.hdfs.qjournal.server.JournalNode",
         "log_file": "/logs/jn.log",
         "jmx_port": 10103,
-    },
-    # ---- Oozie (CDH only) ----
-    "Oozie": {
-        "cm_service": "oozie",
-        "cm_role_type": "OOZIE_SERVER",
-        "log_dir": "/var/log/oozie",
-        "log_prefix": "hadoop-cmf-oozie-OOZIE_SERVER",
-        "nodes": ["hadoop01"],
-        "run_user": "oozie",
-        "core": False,
-        # Apache: 无 Oozie
-        "supervisor_program": None,
-        "java_class": None,
-        "log_file": None,
-        "jmx_port": None,
     },
 }
 

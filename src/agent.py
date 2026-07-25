@@ -1,22 +1,134 @@
 import json
 import logging
 import time
+from typing import Dict, List, Optional, Callable, Any
+
+from src.llm_client import LLMClient
+from src.db import Store
+from src.tools import (
+    TOOL_RISK, get_tool_definitions,
+    AUTO_TOOL_NAMES, FIX_TOOL_NAMES, CHAT_TOOL_NAMES
+)
+from src.config import (
+    MAX_REACT_ITERATIONS, MAX_TOKENS, TEMPERATURE,
+    AUTONOMY, PROMPT_LANGUAGE
+)
+from src.guardrails import Guardrail
 
 try:
-    from .web.event_bus import bus
+    from src.web.event_bus import bus
 except ImportError:
     bus = None
 
-from .llm_client import LLMClient
-from .tools import (TOOL_RISK, get_tool_definitions,
-                   AUTO_TOOL_NAMES, FIX_TOOL_NAMES, CHAT_TOOL_NAMES)
-from .db import Store
-from .guardrails import Guardrail
-from .config import MAX_REACT_ITERATIONS, MAX_TOKENS, TEMPERATURE, AUTONOMY
-
 logger = logging.getLogger(__name__)
 
-AUTO_PROMPT = """你是一个大数据集群巡检 agent。你的职责是高效检查集群健康状态, 主动发现并上报异常。
+
+# =============================================================================
+# Bilingual Prompts (English default)
+# =============================================================================
+
+PROMPTS: Dict[str, Dict[str, str]] = {
+    "en": {
+        "auto": """You are a big data cluster inspection agent. Your job is to efficiently check cluster health and proactively report anomalies.
+
+Cluster Overview:
+- 3-node Apache Hadoop cluster (docker-compose): hadoop01, hadoop02, hadoop03
+- Services: HDFS (NameNode HA/DataNode/JournalNode), YARN (ResourceManager HA/NodeManager/JobHistoryServer), Hive (MetaStore/Server2), HBase (Master/RegionServer), ZooKeeper
+- Monitoring: Prometheus + Grafana (JMX Exporter metrics)
+
+Available Tools: get_alerts, get_service_status, get_metrics, read_logs, search_kb, hdfs_admin, diagnose_node
+
+Inspection Principles:
+- Check alerts first (get_alerts): If alerts exist, investigate specifically; if no alerts, still perform spot checks
+- Must check key metrics every inspection: call hdfs_admin(report) and get_metrics(disk) at least once
+- Batch queries: Use get_service_status("all") to get all service states at once
+- Analyze tool outputs: Don't just look at overall_health. Analyze specific values and text to identify anomalies. Common signals:
+  * Disk usage >= 85% (warning) or >= 90% (critical)
+  * Memory available < 10%
+  * "Safe mode is ON", "Missing blocks" > 0, "Corrupt blocks" > 0 in hdfs_admin output
+  * Service status not GOOD
+  * ERROR/Exception/OOM/Timeout/Connection refused in logs
+  * Short process uptime (possible crash restart)
+- Flexible decisions: Prioritize batch queries, drill down when anomalies found
+- Report anomalies clearly; brief summary when healthy
+
+Rules:
+- Inspection only, no repair actions
+- Reply in English, concise and professional, no emojis
+- IGNORE "Under replicated blocks" - this is normal during cluster startup and auto-heals
+
+Output Format (strict):
+- If anomaly detected: Start with "ANOMALY_DETECTED", one-line summary, then detailed report
+- If healthy: Start with "HEALTHY", then brief summary
+- This marker is parsed by orchestrator to trigger auto-fix""",
+
+        "fix": """You are a big data platform autonomous operations agent. Your job is to diagnose and repair cluster failures.
+
+Cluster Overview:
+- 3-node Apache Hadoop cluster (docker-compose): hadoop01, hadoop02, hadoop03
+- Services: HDFS (NameNode HA/DataNode/JournalNode), YARN (ResourceManager HA/NodeManager/JobHistoryServer), Hive (MetaStore/Server2), HBase (Master/RegionServer), ZooKeeper
+- Monitoring: Prometheus + Grafana (JMX Exporter metrics)
+
+Available Tools: get_alerts, get_service_status, get_metrics, read_logs, search_kb, hdfs_admin, restart_service, edit_remote_config, write_runbook, diagnose_node, file_ops
+
+Diagnostic Principles:
+- Precise targeting: Investigate based on alert info, don't follow fixed procedures
+- Analyze tool outputs: Don't just look at overall_health. Identify anomalies from specific data.
+- Minimal calls: Use fewest tool calls to locate root cause
+- Verify before repair: Confirm root cause before fixing, reference knowledge base (search_kb) for prior experience
+- Verification loop: After repair, verify recovery with get_service_status or corresponding tool, then write_runbook
+
+Common Fault Patterns:
+- Process stopped/crashed: Check status + logs for cause, restart_service
+- OOM: Check logs for OOM keywords, check memory metrics, restart_service
+- Disk full: Check disk metrics, clean logs/temp files
+- GC issues: Check logs for GC keywords, adjust GC parameters
+- Config errors: Check logs for errors, compare configs, edit_remote_config
+- HDFS Safe Mode: hdfs_admin(safemode_get) to confirm, hdfs_admin(safemode_leave) if manually entered, check DataNode if auto-entered
+- Disk usage high: get_metrics(disk) to confirm, diagnose_node(du_root/find_large) to locate, file_ops(delete/cleanup_logs) to clean
+- HDFS corrupt blocks: hdfs_admin(fsck_list_corrupt) to list, hdfs_admin(fsck_delete) to remove, hdfs_admin(report) to verify
+- Unknown faults: Analyze logs and metrics, combine architecture knowledge to reason root cause. Don't give up if no pattern matches.
+
+Rules:
+- DataNode/NodeManager/ZooKeeper/RegionServer/JournalNode are multi-node services, can specify node for targeted operations
+- Wait a few seconds after restart before verification
+- Reply in English, concise and professional, no emojis
+- After successful repair, call write_runbook to capture experience (title concise, content includes symptoms/root cause/fix/verification, confidence 0.8-1.0)""",
+
+        "chat": """You are a conversational operations assistant for the big data platform. Users ask questions or report issues via chat.
+
+Cluster Overview:
+- 3-node Apache Hadoop cluster (docker-compose): hadoop01, hadoop02, hadoop03
+- Services: HDFS, YARN, Hive, HBase, ZooKeeper
+- Monitoring: Prometheus + Grafana
+
+Available Tools: get_alerts, get_service_status, get_metrics, read_logs, search_kb, hdfs_admin, restart_service, edit_remote_config, write_runbook, diagnose_node, file_ops
+
+Work Modes:
+1. Questions: User asks questions (e.g., "Why is HBase slow?")
+   - Use read-only tools to investigate
+   - Combine with knowledge base (search_kb) for analysis and recommendations
+   - No repair operations, only advice
+
+2. Issue Reports: User reports problems (e.g., "HDFS write quota exceeded")
+   - Use tools to reproduce/diagnose (e.g., hdfs_admin(count_quota))
+   - Confirm root cause then repair directly
+   - High-risk operations trigger approval, user approves via Web UI
+   - Verify after repair
+
+3. Requests: User asks to do something (e.g., "Clean HDFS temp files")
+   - Execute the requested operation directly
+   - Briefly explain before executing, report results after
+
+Rules:
+- Reply in English, concise and professional, no emojis
+- Multi-node services can specify node for targeted operations
+- After successful repair, call write_runbook
+- Clearly inform user if issue cannot be handled"""
+    },
+    
+    "zh": {
+        "auto": """你是一个大数据集群巡检 agent。你的职责是高效检查集群健康状态, 主动发现并上报异常。
 
 集群概况:
 - 3节点 Apache Hadoop 集群 (docker-compose): hadoop01, hadoop02, hadoop03
@@ -32,7 +144,7 @@ AUTO_PROMPT = """你是一个大数据集群巡检 agent。你的职责是高效
 - **分析工具输出**: 不要只看 overall_health 字段. 必须逐条分析工具返回的具体数值和文本, 识别异常信号. 你是集群健康的唯一判断者, 告警系统只做最基本的进程存活检测, 其余异常全靠你的分析. 常见异常信号包括但不限于:
   * 磁盘使用率 >= 85% (warning) 或 >= 90% (critical)
   * 内存可用 < 10%
-  * hdfs_admin 输出中的 "Safe mode is ON", "Under replicated blocks" 异常增多, "Missing blocks" > 0, "Corrupt blocks" > 0
+  * hdfs_admin 输出中的 "Safe mode is ON", "Missing blocks" > 0, "Corrupt blocks" > 0
   * 服务状态异常 (非 GOOD 状态)
   * 日志中出现 ERROR/Exception/OOM/OutOfMemory/GC overhead/Timeout/Connection refused
   * 进程 uptime 异常短 (可能刚崩溃重启)
@@ -44,15 +156,16 @@ AUTO_PROMPT = """你是一个大数据集群巡检 agent。你的职责是高效
 规则:
 - 只做检查, 不执行任何修复操作
 - 回复用中文, 简洁专业, 不要使用emoji
+- **忽略 "Under replicated blocks"** - 这是集群启动期间的正常现象, 会自动修复
 
 输出格式 (严格遵守):
 - 如果巡检发现任何异常, 你的回复必须以这行开头: ANOMALY_DETECTED
   第二行用一句话概括异常 (如: HDFS 存在 3 个坏块, 需要修复)
   然后是详细的巡检报告
 - 如果巡检未发现异常, 你的回复以 HEALTHY 开头, 然后是简短的健康总结
-- 这个标记会被调度器解析, 用于决定是否自动触发修复流程"""
+- 这个标记会被调度器解析, 用于决定是否自动触发修复流程""",
 
-FIX_PROMPT = """你是一个大数据平台自治运维 agent。你的职责是诊断和修复集群故障。
+        "fix": """你是一个大数据平台自治运维 agent。你的职责是诊断和修复集群故障。
 
 集群概况:
 - 3节点 Apache Hadoop 集群 (docker-compose): hadoop01, hadoop02, hadoop03
@@ -75,21 +188,20 @@ FIX_PROMPT = """你是一个大数据平台自治运维 agent。你的职责是�
 - GC过长: 查日志GC关键词, 调整GC参数
 - 配置错误: 查日志报错, 对比配置, edit_remote_config 修正
 - HDFS Safe Mode: hdfs_admin(report/safemode_get) 确认状态, 若为手动进入则 hdfs_admin(safemode_leave) 退出, 若为自动进入则检查 DataNode 是否下线导致块不足
-- 磁盘使用率过高: get_metrics(disk) 确认使用率, 查找大文件或日志, 清理临时文件/日志释放空间, 确认服务恢复
+- 磁盘使用率过高: get_metrics(disk) 确认使用率, diagnose_node(du_root/find_large) 定位大文件, file_ops(delete/cleanup_logs) 清理, 确认服务恢复
+- HDFS 坏块修复流程: hdfs_admin(fsck_list_corrupt) 列出坏块文件 → hdfs_admin(fsck_delete, path=/) 删除坏块文件 → hdfs_admin(report) 验证 Corrupt blocks=0
 - **未知故障**: 仔细分析日志和指标中的异常信号, 结合集群架构和服务依赖关系推理根因. 不要因为没有匹配的故障模式就放弃, 要主动分析并尝试修复
 - diagnose_node 可用于任意诊断场景: du_root(磁盘占用)/find_large(大文件)/top_procs(进程)/netstat(端口)/custom(自定义只读命令)
 - file_ops 可用于修复: delete(删除文件)/truncate(截断日志)/cleanup_logs(清理旧日志). 注意安全限制, 仅允许删除日志/临时文件
 - 磁盘满修复流程: diagnose_node(du_root/find_large) 定位大文件 → file_ops(delete/cleanup_logs) 清理 → get_metrics(disk) 验证
-- HDFS 坏块修复流程: hdfs_admin(fsck_list_corrupt) 列出坏块文件 → hdfs_admin(fsck_delete, path=/) 删除坏块文件 → hdfs_admin(report) 验证 Corrupt blocks=0
 
 规则:
 - DataNode/NodeManager/ZooKeeper/RegionServer/JournalNode 是多节点服务, 可指定 node 操作特定节点
 - 重启后等待几秒再用 get_service_status 验证
 - 回复用中文, 简洁专业, 不要使用emoji
-- 修复成功后调用 write_runbook 回写经验 (标题简明, 内容含症状/根因/修复/验证, confidence 0.8-1.0)"""
+- 修复成功后调用 write_runbook 回写经验 (标题简明, 内容含症状/根因/修复/验证, confidence 0.8-1.0)""",
 
-
-CHAT_PROMPT = """你是大数据平台的对话式运维助手。用户会通过聊天框向你提问或汇报问题。
+        "chat": """你是大数据平台的对话式运维助手。用户会通过聊天框向你提问或汇报问题。
 
 集群概况:
 - 3节点 Apache Hadoop 集群 (docker-compose): hadoop01, hadoop02, hadoop03
@@ -100,7 +212,7 @@ CHAT_PROMPT = """你是大数据平台的对话式运维助手。用户会通过
 
 工作模式:
 1. **提问类**: 用户问问题 (如"HBase 为什么慢?""上次 DataNode 掉线怎么修的?")
-   - 调用只读工具 (get_service_status/get_metrics/read_logs/hdfs_admin(search_kb) 等) 排查
+   - 调用只读工具 (get_service_status/get_metrics/read_logs/hdfs_admin/search_kb 等) 排查
    - 结合知识库 (search_kb) 给出分析和建议
    - 不执行修复操作, 只给建议
 
@@ -125,84 +237,133 @@ CHAT_PROMPT = """你是大数据平台的对话式运维助手。用户会通过
 - DataNode/NodeManager/ZooKeeper/RegionServer/JournalNode 是多节点服务, 可指定 node 操作特定节点
 - 修复成功后调用 write_runbook 回写经验
 - 无法处理的问题明确告知用户原因和建议"""
+    }
+}
 
+
+def get_prompt(mode: str, lang: Optional[str] = None) -> str:
+    """Get prompt for given mode and language."""
+    if lang is None:
+        lang = PROMPT_LANGUAGE
+    
+    # Fallback to English if language not supported
+    if lang not in PROMPTS:
+        lang = "en"
+    
+    # Fallback to fix prompt if mode not found
+    if mode not in PROMPTS[lang]:
+        mode = "fix"
+    
+    return PROMPTS[lang][mode]
+
+
+# =============================================================================
+# ReAct Agent
+# =============================================================================
 
 class ReActAgent:
-    def __init__(self, llm: LLMClient, store: Store, mode="fix",
-                 guardrail: Guardrail = None):
+    """ReAct agent for cluster inspection and repair."""
+    
+    def __init__(
+        self,
+        llm: LLMClient,
+        store: Store,
+        mode: str = "fix",
+        guardrail: Optional[Guardrail] = None,
+        lang: Optional[str] = None
+    ):
         self.llm = llm
         self.store = store
         self.mode = mode
+        self.lang = lang or PROMPT_LANGUAGE
         self.guardrail = guardrail or Guardrail(store, autonomy=AUTONOMY)
+        
+        # Set tool names and prompt based on mode
         if mode == "auto":
             self.tool_names = AUTO_TOOL_NAMES
-            self.system_prompt = AUTO_PROMPT
         elif mode == "chat":
             self.tool_names = CHAT_TOOL_NAMES
-            self.system_prompt = CHAT_PROMPT
         else:
             self.tool_names = FIX_TOOL_NAMES
-            self.system_prompt = FIX_PROMPT
+        
+        self.system_prompt = get_prompt(mode, self.lang)
         self.tool_defs = get_tool_definitions(self.tool_names)
-
-    def run(self, user_message: str, parent_id=None, trigger="") -> str:
-        """标准 ReAct 循环 (无历史上下文)"""
+    
+    def run(
+        self,
+        user_message: str,
+        parent_id: Optional[str] = None,
+        trigger: str = ""
+    ) -> str:
+        """Standard ReAct loop (no history)."""
         return self._run_react(user_message, [], parent_id, trigger)
-
-    def run_with_history(self, user_message: str, history: list,
-                         parent_id=None, trigger="", session_id=None) -> str:
-        """带多轮上下文的 ReAct 循环 (chat 模式专用)
-
-        Args:
-            user_message: 当前用户消息
-            history: [{role, content}, ...] 之前的对话历史
-            session_id: 预创建的 agent session_id (可选, 用于前端实时获取思考链)
-        """
+    
+    def run_with_history(
+        self,
+        user_message: str,
+        history: List[Dict],
+        parent_id: Optional[str] = None,
+        trigger: str = "",
+        session_id: Optional[str] = None
+    ) -> str:
+        """ReAct loop with conversation history (chat mode)."""
         return self._run_react(user_message, history, parent_id, trigger, session_id)
-
-    def _run_react(self, user_message: str, history: list,
-                   parent_id=None, trigger="", session_id=None) -> str:
+    
+    def _run_react(
+        self,
+        user_message: str,
+        history: List[Dict],
+        parent_id: Optional[str] = None,
+        trigger: str = "",
+        session_id: Optional[str] = None
+    ) -> str:
+        """Core ReAct loop implementation."""
+        # Create or use existing session
         sid = session_id or self.store.create_session(
-            session_type=self.mode, parent_id=parent_id, trigger=trigger)
+            session_type=self.mode,
+            parent_id=parent_id,
+            trigger=trigger
+        )
         seq = 0
         tag = f"[/{self.mode} {sid}]"
-
-        # 构建消息: system + 历史 + 当前用户消息
+        
+        # Build messages: system + history + current user message
         messages = [{"role": "system", "content": self.system_prompt}]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": user_message})
-        self.store.log_event(sid, seq, "user_input", {"message": user_message}); seq += 1
-        if bus:
-            bus.publish({"type": "agent_event", "session_id": sid, "kind": "user_input", "content": {"message": user_message}})
-
-        for i in range(MAX_REACT_ITERATIONS):
-            logger.info(f"{tag} --- iteration {i+1}/{MAX_REACT_ITERATIONS} ---")
-
-            # 流式输出: 批量发送，平衡性能和体验
+        
+        # Log user input
+        self._log_event(sid, seq, "user_input", {"message": user_message})
+        seq += 1
+        
+        # ReAct iteration loop
+        for iteration in range(MAX_REACT_ITERATIONS):
+            logger.info(f"{tag} --- iteration {iteration + 1}/{MAX_REACT_ITERATIONS} ---")
+            
+            # Stream handling setup
             stream_buffer = {"reasoning": "", "content": ""}
             last_send_time = time.time()
-            BATCH_SIZE = 10  # 每 10 个字符发送一次（更流畅）
-            BATCH_INTERVAL = 0.05  # 或每 50ms 发送一次（更实时）
-
-            def _on_chunk(chunk, _sid=sid):
+            BATCH_SIZE = 10
+            BATCH_INTERVAL = 0.05
+            
+            def _on_chunk(chunk: Dict, _sid: str = sid) -> None:
+                """Handle streaming chunks from LLM."""
                 if not bus:
                     return
-
-                chunk_type = chunk["type"]
-                text = chunk["text"]
-
-                # 累积到缓冲区
+                
+                chunk_type = chunk.get("type", "")
+                text = chunk.get("text", "")
+                
                 if chunk_type == "reasoning":
                     stream_buffer["reasoning"] += text
                 else:
                     stream_buffer["content"] += text
-
-                # 判断是否需要发送
+                
                 nonlocal last_send_time
                 current_time = time.time()
-                buffer_text = stream_buffer[chunk_type]
-
+                buffer_text = stream_buffer.get(chunk_type, "")
+                
                 if len(buffer_text) >= BATCH_SIZE or (current_time - last_send_time) >= BATCH_INTERVAL:
                     if buffer_text:
                         kind = "stream_reasoning" if chunk_type == "reasoning" else "stream_content"
@@ -214,15 +375,18 @@ class ReActAgent:
                         })
                         stream_buffer[chunk_type] = ""
                         last_send_time = current_time
-
+            
+            # Call LLM with streaming
             try:
                 resp = self.llm.chat_stream(
-                    messages=messages, tools=self.tool_defs,
-                    max_tokens=MAX_TOKENS, temperature=TEMPERATURE,
-                    on_chunk=_on_chunk,
+                    messages=messages,
+                    tools=self.tool_defs,
+                    max_tokens=MAX_TOKENS,
+                    temperature=TEMPERATURE,
+                    on_chunk=_on_chunk
                 )
-
-                # 流结束后，发送剩余的缓冲区
+                
+                # Flush remaining stream buffer
                 if bus:
                     if stream_buffer["reasoning"]:
                         bus.publish({
@@ -238,180 +402,253 @@ class ReActAgent:
                             "kind": "stream_content",
                             "content": {"text": stream_buffer["content"]}
                         })
-
+            
             except Exception as e:
                 logger.warning(f"{tag} chat_stream failed ({e}), fallback to chat")
                 try:
                     resp = self.llm.chat(
-                        messages=messages, tools=self.tool_defs,
-                        max_tokens=MAX_TOKENS, temperature=TEMPERATURE,
+                        messages=messages,
+                        tools=self.tool_defs,
+                        max_tokens=MAX_TOKENS,
+                        temperature=TEMPERATURE
                     )
                 except Exception as e2:
                     logger.error(f"{tag} chat fallback also failed: {e2}")
-                    self.store.log_event(sid, seq, "error", {"error": f"LLM unavailable: {e2}"}); seq += 1
+                    self._log_event(sid, seq, "error", {"error": f"LLM unavailable: {e2}"})
                     self.store.finish_session(sid, summary=f"LLM error: {e2}", status="error")
                     return f"LLM error: {e2}"
-
-            content = resp["content"]
-            reasoning = resp["reasoning"]
-            tool_calls = resp["tool_calls"]
             
+            # Process LLM response
+            content = resp.get("content", "")
+            reasoning = resp.get("reasoning", "")
+            tool_calls = resp.get("tool_calls", [])
+            
+            # Log reasoning
             if reasoning:
                 print(f"  {tag} [思考] {reasoning.strip()[:150]}")
-                self.store.log_event(sid, seq, "reasoning", {"text": reasoning}); seq += 1
-                if bus: bus.publish({"type": "agent_event", "session_id": sid, "kind": "reasoning", "content": {"text": reasoning}})
-
+                self._log_event(sid, seq, "reasoning", {"text": reasoning})
+                seq += 1
+                if bus:
+                    bus.publish({
+                        "type": "agent_event",
+                        "session_id": sid,
+                        "kind": "reasoning",
+                        "content": {"text": reasoning}
+                    })
+            
+            # Build assistant message
             assistant_msg = {"role": "assistant", "content": content}
             if tool_calls:
                 assistant_msg["tool_calls"] = [
-                    {"id": tc["id"], "type": "function",
-                     "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"], ensure_ascii=False)}}
+                    {
+                        "id": tc.get("id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": tc.get("name", ""),
+                            "arguments": json.dumps(tc.get("arguments", {}), ensure_ascii=False)
+                        }
+                    }
                     for tc in tool_calls
                 ]
             messages.append(assistant_msg)
             
-            self.store.log_event(sid, seq, "assistant", {"text": content, "tool_calls": tool_calls}); seq += 1
+            # Log assistant response
+            self._log_event(sid, seq, "assistant", {"text": content, "tool_calls": tool_calls})
+            seq += 1
             if bus and (content or tool_calls):
-                bus.publish({"type": "agent_event", "session_id": sid, "kind": "assistant", "content": {"text": content or "", "tool_calls": tool_calls}})
-
+                bus.publish({
+                    "type": "agent_event",
+                    "session_id": sid,
+                    "kind": "assistant",
+                    "content": {"text": content or "", "tool_calls": tool_calls}
+                })
+            
+            # Check if done (no tool calls)
             if not tool_calls:
-                # LLM 偶尔返回空 content, 用最后一条 reasoning 作为 fallback
+                # Fallback to reasoning if content is empty
                 if not content.strip() and reasoning:
                     content = reasoning.strip()
                 if not content.strip():
-                    content = "(Agent 完成了分析但未生成文字回复，请查看思考过程。)"
+                    content = "(Agent completed analysis but generated no text response. Please check the thinking process.)"
+                
                 print(f"  {tag} [完成] {content[:200]}")
-                self.store.log_event(sid, seq, "final_answer", {"text": content}); seq += 1
+                self._log_event(sid, seq, "final_answer", {"text": content})
                 if bus:
-                    bus.publish({"type": "agent_event", "session_id": sid, "kind": "final_answer", "content": {"text": content}})
-
-                # M5 学习闭环: fix/chat 模式下, 若修复成功但未调用 write_runbook, 追加一轮提示
-                if self.mode in ("fix", "chat") and not _session_used_tool(sid, self.store, "write_runbook"):
-                    _maybe_prompt_runbook(self, sid, seq, messages, content, tag)
-                    seq += 10  # 预留序号 (追加逻辑内部会自增)
-
+                    bus.publish({
+                        "type": "agent_event",
+                        "session_id": sid,
+                        "kind": "final_answer",
+                        "content": {"text": content}
+                    })
+                
+                # Maybe prompt for runbook in fix/chat mode
+                if self.mode in ("fix", "chat"):
+                    if not self._session_used_tool(sid, "write_runbook"):
+                        self._maybe_prompt_runbook(sid, seq, messages, content, tag)
+                        seq += 10
+                
                 self.store.finish_session(sid, summary=content[:300])
                 return content
-
+            
+            # Execute tool calls
             for tc in tool_calls:
-                name = tc["name"]
-                args = tc["arguments"]
+                name = tc.get("name", "")
+                args = tc.get("arguments", {})
                 risk = TOOL_RISK.get(name, "low")
+                
                 print(f"  {tag} [工具] {name}({args}) risk={risk}")
-                self.store.log_event(sid, seq, "tool_call", {"name": name, "args": args, "risk": risk}); seq += 1
-                if bus: bus.publish({"type": "agent_event", "session_id": sid, "kind": "tool_call", "content": {"name": name, "args": args, "risk": risk}})
-
+                self._log_event(sid, seq, "tool_call", {"name": name, "args": args, "risk": risk})
+                if bus:
+                    bus.publish({
+                        "type": "agent_event",
+                        "session_id": sid,
+                        "kind": "tool_call",
+                        "content": {"name": name, "args": args, "risk": risk}
+                    })
+                seq += 1
+                
+                # Execute via guardrail
                 result = self.guardrail.execute(name, args, session_id=sid)
                 print(f"  {tag} [结果] {json.dumps(result, ensure_ascii=False)[:200]}")
-                self.store.log_event(sid, seq, "tool_result", {"name": name, "result": result}); seq += 1
-                if bus: bus.publish({"type": "agent_event", "session_id": sid, "kind": "tool_result", "content": {"name": name, "result": result}})
-
+                self._log_event(sid, seq, "tool_result", {"name": name, "result": result})
+                if bus:
+                    bus.publish({
+                        "type": "agent_event",
+                        "session_id": sid,
+                        "kind": "tool_result",
+                        "content": {"name": name, "result": result}
+                    })
+                seq += 1
+                
+                # Add tool result to messages
                 messages.append({
-                    "role": "tool", "tool_call_id": tc.get("id", ""),
-                    "name": name, "content": json.dumps(result, ensure_ascii=False),
+                    "role": "tool",
+                    "tool_call_id": tc.get("id", ""),
+                    "name": name,
+                    "content": json.dumps(result, ensure_ascii=False)
                 })
-
+        
+        # Max iterations reached
         print(f"  {tag} [达到最大迭代数, 终止]")
         self.store.finish_session(sid, summary="max iterations", status="aborted")
         return "max iterations"
-
-
-# ============================================================
-# M5 学习闭环辅助函数
-# ============================================================
-
-def _session_used_tool(session_id: str, store: Store, tool_name: str) -> bool:
-    """检查 session 是否已调用过指定工具"""
-    try:
-        with store.lock:
-            row = store.conn.execute(
-                "SELECT COUNT(*) FROM session_events "
-                "WHERE session_id=? AND kind='tool_call' "
-                "AND json_extract(content_json, '$.name')=?",
-                (session_id, tool_name)
-            ).fetchone()
-        return row and row[0] > 0
-    except Exception:
-        return False
-
-
-def _session_has_repair_action(session_id: str, store: Store) -> bool:
-    """检查 session 是否执行过修复操作 (restart_service / edit_remote_config)"""
-    try:
-        with store.lock:
-            row = store.conn.execute(
-                "SELECT COUNT(*) FROM session_events "
-                "WHERE session_id=? AND kind='tool_call' "
-                "AND (json_extract(content_json, '$.name')='restart_service' "
-                "     OR json_extract(content_json, '$.name')='edit_remote_config')",
-                (session_id,)
-            ).fetchone()
-        return row and row[0] > 0
-    except Exception:
-        return False
-
-
-def _maybe_prompt_runbook(agent, sid: str, seq: int, messages: list,
-                           final_content: str, tag: str):
-    """fix 模式修复成功后, 若未调用 write_runbook, 追加一轮提示让 agent 回写经验
-
-    判断逻辑:
-    - session 执行过 restart_service 或 edit_remote_config (确实修复了)
-    - 最终回答中包含"成功/恢复/正常/OK/GOOD"等关键词 (修复有效)
-    - 未调用过 write_runbook
-    → 追加一条 user 消息, 提示 agent 调用 write_runbook
-    """
-    if not _session_has_repair_action(sid, agent.store):
-        return
-
-    # 检测修复成功关键词 (宽松匹配, 避免漏判)
-    success_keywords = ["成功", "恢复", "正常", "已启动", "已修复", "GOOD", "RUNNING",
-                        "已解决", "验证通过", "health"]
-    content_lower = final_content.lower()
-    is_success = any(kw.lower() in content_lower for kw in success_keywords)
-    if not is_success:
-        return
-
-    # 追加提示
-    prompt = (
-        "检测到本次故障已成功修复。请调用 write_runbook 工具, 将本次排查和修复经验回写知识库, "
-        "供未来遇到相同问题时快速复用。要求:\n"
-        "- title: 简明描述故障场景 (如 'DataNode OOM 崩溃修复')\n"
-        "- content: 结构化描述, 包含 症状/排查步骤/根因/修复方法/验证方式\n"
-        "- tags: 相关标签 (逗号分隔, 如 hdfs,datanode,oom)\n"
-        "- confidence: 0.8-1.0 (根据修复把握度)"
-    )
-    messages.append({"role": "user", "content": prompt})
-    agent.store.log_event(sid, seq, "runbook_prompt", {"text": prompt})
-    if bus:
-        bus.publish({"type": "agent_event", "session_id": sid,
-                     "kind": "runbook_prompt", "content": {"text": prompt}})
-
-    # 再跑一轮 LLM 让它调用 write_runbook
-    try:
-        resp = agent.llm.chat(
-            messages=messages, tools=agent.tool_defs,
-            max_tokens=MAX_TOKENS, temperature=TEMPERATURE,
-        )
-        tool_calls = resp.get("tool_calls", [])
-        if tool_calls:
+    
+    def _log_event(self, sid: str, seq: int, kind: str, content: Dict) -> None:
+        """Log event to store and publish to bus."""
+        self.store.log_event(sid, seq, kind, content)
+    
+    def _session_used_tool(self, session_id: str, tool_name: str) -> bool:
+        """Check if session has used a specific tool."""
+        try:
+            with self.store.lock:
+                row = self.store.conn.execute(
+                    """SELECT COUNT(*) FROM session_events 
+                       WHERE session_id=? AND kind='tool_call' 
+                       AND json_extract(content_json, '$.name')=?""",
+                    (session_id, tool_name)
+                ).fetchone()
+            return row and row[0] > 0
+        except Exception:
+            return False
+    
+    def _session_has_repair_action(self, session_id: str) -> bool:
+        """Check if session has executed repair actions."""
+        try:
+            with self.store.lock:
+                row = self.store.conn.execute(
+                    """SELECT COUNT(*) FROM session_events 
+                       WHERE session_id=? AND kind='tool_call' 
+                       AND (json_extract(content_json, '$.name')='restart_service' 
+                            OR json_extract(content_json, '$.name')='edit_remote_config')""",
+                    (session_id,)
+                ).fetchone()
+            return row and row[0] > 0
+        except Exception:
+            return False
+    
+    def _maybe_prompt_runbook(
+        self,
+        sid: str,
+        seq: int,
+        messages: List[Dict],
+        final_content: str,
+        tag: str
+    ) -> None:
+        """Prompt agent to write runbook after successful repair."""
+        if not self._session_has_repair_action(sid):
+            return
+        
+        # Check for success keywords
+        success_keywords = [
+            "成功", "恢复", "正常", "已启动", "已修复", "GOOD", "RUNNING",
+            "已解决", "验证通过", "health", "success", "recovered", "fixed",
+            "restored", "completed", "verified"
+        ]
+        content_lower = final_content.lower()
+        is_success = any(kw.lower() in content_lower for kw in success_keywords)
+        if not is_success:
+            return
+        
+        # Build prompt based on language
+        if self.lang == "zh":
+            prompt = (
+                "检测到本次故障已成功修复。请调用 write_runbook 工具, 将本次排查和修复经验回写知识库, "
+                "供未来遇到相同问题时快速复用。要求:\n"
+                "- title: 简明描述故障场景 (如 'DataNode OOM 崩溃修复')\n"
+                "- content: 结构化描述, 包含 症状/排查步骤/根因/修复方法/验证方式\n"
+                "- tags: 相关标签 (逗号分隔, 如 hdfs,datanode,oom)\n"
+                "- confidence: 0.8-1.0 (根据修复把握度)"
+            )
+        else:
+            prompt = (
+                "Fault has been successfully repaired. Please call write_runbook tool to capture "
+                "this troubleshooting and repair experience to the knowledge base for future reuse. "
+                "Requirements:\n"
+                "- title: Concise description of fault scenario (e.g., 'DataNode OOM Crash Repair')\n"
+                "- content: Structured description including symptoms/investigation steps/root cause/repair method/verification\n"
+                "- tags: Relevant tags (comma-separated, e.g., hdfs,datanode,oom)\n"
+                "- confidence: 0.8-1.0 (based on repair confidence)"
+            )
+        
+        messages.append({"role": "user", "content": prompt})
+        self._log_event(sid, seq, "runbook_prompt", {"text": prompt})
+        if bus:
+            bus.publish({
+                "type": "agent_event",
+                "session_id": sid,
+                "kind": "runbook_prompt",
+                "content": {"text": prompt}
+            })
+        
+        # Run LLM to generate runbook
+        try:
+            resp = self.llm.chat(
+                messages=messages,
+                tools=self.tool_defs,
+                max_tokens=MAX_TOKENS,
+                temperature=TEMPERATURE
+            )
+            tool_calls = resp.get("tool_calls", [])
             for tc in tool_calls:
-                name = tc["name"]
-                if name == "write_runbook":
-                    args = tc["arguments"]
+                if tc.get("name") == "write_runbook":
+                    args = tc.get("arguments", {})
                     print(f"  {tag} [学习闭环] 自动回写 runbook: {args.get('title', '')}")
-                    result = agent.guardrail.execute(name, args, session_id=sid)
-                    agent.store.log_event(sid, seq + 1, "tool_call",
-                                          {"name": name, "args": args, "auto": True})
-                    agent.store.log_event(sid, seq + 2, "tool_result",
-                                          {"name": name, "result": result})
+                    result = self.guardrail.execute("write_runbook", args, session_id=sid)
+                    self._log_event(sid, seq + 1, "tool_call", {"name": "write_runbook", "args": args, "auto": True})
+                    self._log_event(sid, seq + 2, "tool_result", {"name": "write_runbook", "result": result})
                     if bus:
-                        bus.publish({"type": "agent_event", "session_id": sid,
-                                     "kind": "tool_call",
-                                     "content": {"name": name, "args": args, "auto": True}})
-                        bus.publish({"type": "agent_event", "session_id": sid,
-                                     "kind": "tool_result",
-                                     "content": {"name": name, "result": result}})
-                    logger.info(f"{tag} 学习闭环: runbook 已回写 (id={result.get('id', '')})")
-    except Exception as e:
-        logger.warning(f"{tag} 自动回写 runbook 失败: {e}")
+                        bus.publish({
+                            "type": "agent_event",
+                            "session_id": sid,
+                            "kind": "tool_call",
+                            "content": {"name": "write_runbook", "args": args, "auto": True}
+                        })
+                        bus.publish({
+                            "type": "agent_event",
+                            "session_id": sid,
+                            "kind": "tool_result",
+                            "content": {"name": "write_runbook", "result": result}
+                        })
+                    logger.info(f"{tag} Runbook written: {result.get('id', '')}")
+        except Exception as e:
+            logger.warning(f"{tag} Auto write runbook failed: {e}")
