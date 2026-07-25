@@ -43,7 +43,8 @@ interface AgentEvent {
 }
 
 // ---- 常量 ----
-const FLUSH_INTERVAL = 800
+const FLUSH_INTERVAL = 150
+const EMPTY_EVENTS: AgentEvent[] = []
 
 // ---- 工具函数 ----
 
@@ -83,7 +84,7 @@ const EventItem = memo(({ ev }: { ev: AgentEvent }) => {
     return <div style={{ padding: '2px 0' }}><Text style={{ fontSize: 12, color: '#cbd5e1' }}>{c.message || ''}</Text></div>
   }
 
-  if (kind === 'reasoning') {
+  if (kind === 'reasoning' || kind === 'stream_reasoning') {
     const text = c.text || ''
     return (
       <div style={containerStyle}>
@@ -123,6 +124,7 @@ const EventItem = memo(({ ev }: { ev: AgentEvent }) => {
 
   if (kind === 'assistant') {
     const text = c.content || c.text || ''
+    if (!text && (c.tool_calls || []).length > 0) return null
     return (
       <div style={containerStyle}>
         <div style={{ fontSize: 11, color, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
@@ -155,25 +157,32 @@ const EventItem = memo(({ ev }: { ev: AgentEvent }) => {
   }
 
   return null
-}, (prev, next) => prev.ev === next.ev)  // 只有引用相同时才跳过
+})
 
-// ---- 思考链  ----
+// ---- 思考链 ----
 
 function ThinkingTimeline({ events, loading }: { events: AgentEvent[], loading: boolean }) {
-  const displayEvents = events.filter(e =>
-    !['stream_reasoning', 'stream_content'].includes(e.kind)
-  )
+  const [expanded, setExpanded] = useState(false)
+  const prevLoadingRef = useRef(false)
+
+  // Auto-expand when processing starts
+  useEffect(() => {
+    if (loading && !prevLoadingRef.current) {
+      setExpanded(true)
+    }
+    prevLoadingRef.current = loading
+  }, [loading])
+
+  const displayEvents = events.filter(e => e.kind !== 'stream_content')
 
   if (displayEvents.length === 0 && !loading) return null
-
-
-const renderEvents = displayEvents
 
   return (
     <Collapse
       ghost
       size="small"
-      // 默认折叠! 不展开, 不渲染 Timeline DOM
+      activeKey={expanded ? ['thinking'] : []}
+      onChange={(keys) => setExpanded(keys.length > 0)}
       items={[{
         key: 'thinking',
         label: (
@@ -187,7 +196,7 @@ const renderEvents = displayEvents
         ),
         children: (
           <div style={{ borderLeft: '2px solid #1e293b', marginLeft: 4, paddingLeft: 8 }}>
-            {renderEvents.map((ev, idx) => (
+            {displayEvents.map((ev, idx) => (
               <EventItem ev={ev} key={`${ev.seq}-${idx}`} />
             ))}
           </div>
@@ -205,6 +214,15 @@ const MessageItem = memo(({ msg, events, isProcessing }: {
   isProcessing: boolean
 }) => {
   const hasEvents = events.length > 0
+
+  // Extract streaming content text for building-up response display
+  let streamContentText = ''
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].kind === 'stream_content') {
+      streamContentText = events[i].content?.text || ''
+      break
+    }
+  }
 
   return (
     <div style={{ marginBottom: 12 }}>
@@ -252,6 +270,15 @@ const MessageItem = memo(({ msg, events, isProcessing }: {
               <ThinkingTimeline events={events} loading={isProcessing && !msg.reply} />
             )}
 
+            {/* Streaming content - show as building-up response while processing */}
+            {isProcessing && streamContentText && (
+              <div style={{ marginTop: hasEvents ? 8 : 0 }}>
+                <div style={{ fontSize: 13, color: '#e2e8f0', whiteSpace: 'pre-wrap' }}>
+                  {streamContentText}
+                </div>
+              </div>
+            )}
+
             {msg.status === 'done' && msg.reply && (
               <div style={{ marginTop: hasEvents ? 8 : 0 }}>
                 <div className="markdown-body" style={{ fontSize: 13 }}>
@@ -260,7 +287,7 @@ const MessageItem = memo(({ msg, events, isProcessing }: {
               </div>
             )}
 
-            {isProcessing && !hasEvents && (
+            {isProcessing && !hasEvents && !streamContentText && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' }}>
                 <Spin size="small" />
                 <span style={{ color: '#64748b', fontSize: 12 }}>
@@ -290,11 +317,6 @@ const MessageItem = memo(({ msg, events, isProcessing }: {
       )}
     </div>
   )
-}, (prev, next) => {
-  // 只有 msg 引用变化或 events 长度变化才重渲染
-  return prev.msg === next.msg &&
-    prev.events === next.events &&
-    prev.isProcessing === next.isProcessing
 })
 
 // ---- 主组件 ----
@@ -390,6 +412,18 @@ function ChatConsole() {
             msgToSessionRef.current.set(m.id, m.session_id)
             processingMsgsRef.current.add(m.id)
           }
+          // Fetch historical events for done messages with session_id
+          if (m.session_id && m.status === 'done' && !msgEventsRef.current.has(m.id)) {
+            fetch(`/api/sessions/${m.session_id}/events`)
+              .then(r => r.json())
+              .then((events: AgentEvent[]) => {
+                if (events.length > 0) {
+                  msgEventsRef.current.set(m.id, events)
+                  setTick(t => t + 1)
+                }
+              })
+              .catch(() => {})
+          }
         })
       })
       .catch(e => console.error('fetchMessages failed:', e))
@@ -461,39 +495,35 @@ function ChatConsole() {
         }
       }
 
-      // 追加事件到 ref (不触发渲染, 等 800ms tick)
+      // 追加事件到 ref (immutable updates for correct React memo behavior)
       const current = msgEventsRef.current.get(msgId) || []
 
       if (kind === 'stream_reasoning' || kind === 'stream_content') {
         const last = current[current.length - 1]
+        let newEvents: AgentEvent[]
         if (last && last.kind === kind) {
           const existingText = last.content?.text || ''
           const newText = content?.text || ''
-          // 超长截断: 保留最新 60000 字符，防止单条流式事件无限膨胀
           const truncatedText = (existingText + newText).slice(-60000)
-          // 直接修改对象，避免创建新数组
-          last.content = { text: truncatedText }
+          newEvents = [...current.slice(0, -1), { ...last, content: { text: truncatedText } }]
         } else {
-          current.push({ kind, content, ts: Date.now() / 1000, seq: current.length })
+          newEvents = [...current, { kind, content, ts: Date.now() / 1000, seq: current.length }]
         }
+        msgEventsRef.current.set(msgId, newEvents)
       } else if (kind === 'reasoning' || kind === 'assistant') {
         const streamKind = kind === 'reasoning' ? 'stream_reasoning' : 'stream_content'
         const last = current[current.length - 1]
+        let newEvents: AgentEvent[]
         if (last && last.kind === streamKind) {
-          // 替换流式事件为最终事件，直接修改避免创建新对象
-          last.kind = kind
-          last.content = content
-          last.seq = current.length - 1
+          newEvents = [...current.slice(0, -1), { kind, content, ts: Date.now() / 1000, seq: current.length - 1 }]
         } else {
-          current.push({ kind, content, ts: Date.now() / 1000, seq: current.length })
+          newEvents = [...current, { kind, content, ts: Date.now() / 1000, seq: current.length }]
         }
+        msgEventsRef.current.set(msgId, newEvents)
       } else {
-        // 普通事件：直接追加，不删除
-        current.push({ kind, content, ts: Date.now() / 1000, seq: current.length })
+        const newEvents = [...current, { kind, content, ts: Date.now() / 1000, seq: current.length }]
+        msgEventsRef.current.set(msgId, newEvents)
       }
-
-      // 保存事件
-      msgEventsRef.current.set(msgId, current)
 
       // final_answer / error: 更新消息状态
       if (kind === 'final_answer' || kind === 'error') {
@@ -677,7 +707,7 @@ function ChatConsole() {
             </div>
           ) : (
             messages.map((msg) => {
-              const events = msgEventsRef.current.get(msg.id) || []
+              const events = msgEventsRef.current.get(msg.id) || EMPTY_EVENTS
               const isProcessing = processingMsgsRef.current.has(msg.id)
               return (
                 <MessageItem key={msg.id} msg={msg} events={events} isProcessing={isProcessing} />
