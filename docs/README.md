@@ -47,10 +47,8 @@ graph TB
             AGENT --- WEB
         end
 
-        subgraph "Hadoop Cluster"
-            H1["hadoop01<br/>NN+RM+HM+HS2"]
-            H2["hadoop02<br/>NN+RM+HM+HS2"]
-            H3["hadoop03<br/>DN+NM+RS"]
+        subgraph "Hadoop Cluster (Single-node Direct Install)"
+            H1["hadoop01 (localhost)<br/>NN+DN+RM+NM+JHS<br/>HM+RS+ZK+HMS+HS2"]
             MYSQL["MySQL<br/>Metastore"]
             PROM["Prometheus"]
             GRAF["Grafana"]
@@ -60,14 +58,9 @@ graph TB
 
         LLAMA -->|HTTP local| AGENT
         AGENT -->|SSH :2222-2224| H1
-        AGENT -->|SSH| H2
-        AGENT -->|SSH| H3
         AGENT -->|HTTP| PROM
-        H1 --- H2 --- H3
         H1 --- MYSQL
         PROM --- H1
-        PROM --- H2
-        PROM --- H3
         PROM --- GRAF
         AGENT -->|127.0.0.1:8000| TUNNEL
     end
@@ -87,7 +80,7 @@ graph TB
 |-------|-----------|------------|
 | Inference | llama-server (local) | llama.cpp + ROCm/HIPBLAS, Qwen27B Q4_K_M, MTP speculative decoding |
 | Control | Orchestrator + ReActAgent | Python, FastAPI, WebSocket |
-| Data | Hadoop 3-node HA cluster | Docker-in-Docker: HDFS HA + YARN HA + Hive + HBase + ZK |
+| Data | Hadoop single-node (direct install) | HDFS + YARN + Hive + HBase + ZK + Tez, managed by supervisord |
 | Monitoring | Prometheus + Grafana | JMX Exporter → Prometheus → Grafana dashboards |
 | Frontend | React + Ant Design | Vite build → FastAPI static hosting (single port) |
 | Knowledge | SQLite + bge-small-zh | Hybrid RAG: vector + BM25, CPU embedding |
@@ -133,41 +126,38 @@ This script automatically performs **all** of the following (idempotent — safe
 |------|--------|------|
 | 1 | Compile llama.cpp with ROCm/HIPBLAS | ~10-15 min (first time) |
 | 2 | Download model + start llama-server (via `bootstrap.sh`) | ~5-10 min |
-| 3 | Install Docker (Docker-in-Docker) | ~2 min |
-| 4 | Hadoop cluster (see below for 3 paths) | ~2-15 min |
-| 5 | Install Python dependencies | ~1 min |
-| 6 | Build React frontend (production) | ~1 min |
-| 7 | Generate `.env` + start Agent + Web | ~10s |
-| 8 | Expose via rc-tunnel (public URL) | ~5s |
+| 3 | Hadoop cluster — single-node direct install (via `setup-hadoop-direct.sh`) | ~10-15 min |
+| 4 | Install Python dependencies | ~1 min |
+| 5 | Build React frontend (production) | ~1 min |
+| 6 | Generate `.env` + start Agent + Web | ~10s |
+| 7 | Expose via rc-tunnel (public URL) | ~5s |
 
-**Total: ~5 min (full backup) / ~30-40 min (from scratch)**
+**Total: ~20-30 min (first run), ~2 min (subsequent runs, everything cached)**
 
-### Hadoop Cluster — Two Paths (Step 4)
+The script will prompt you to select a cluster mode:
 
-`setup-cloud.sh` automatically detects which path to use:
+```
+Select Hadoop cluster mode:
+  1) Local single-node — Direct Hadoop install on AMD Cloud host (no Docker, no HA)
+  2) Remote HA cluster — Connect to remote Docker 3-node Hadoop HA
+Enter 1 or 2 [default 1]:
+```
 
-| Path | Trigger | What happens | Hadoop knowledge needed? |
-|------|---------|-------------|------------------------|
-| **A: Full backup** | `/workspace/aiops-cluster-backup.tar.gz` exists | Load image + restore pre-initialized volumes + `restart-daemons.sh` | ❌ None |
-| **B: From scratch** | No backup file found | Download tarballs + `docker compose build` + `init-cluster.sh` | ✅ May need to troubleshoot |
-
-**Path A (recommended for judges):** Run `scripts/export-cluster.sh` locally to create a full backup (image + pre-initialized data volumes), transfer to AMD Cloud. Judges get a pre-initialized cluster that "just works" — no HDFS formatting, no ZK quorum setup, no RM state-store init. Only `restart-daemons.sh` is needed.
-
-> `bootstrap.sh` handles model download + llama-server startup (step 2). It no longer exposes rc-tunnel by default — that's handled by `setup-cloud.sh` step 8 (exposing port 8000 for the web console).
+- **Mode 1 (recommended for judges)**: Installs Hadoop/ZK/HBase/Hive/Tez/MySQL directly on the AMD Cloud host using `setup-hadoop-direct.sh`. No Docker required. Uses supervisord for process management and 3 SSH ports (2222/2223/2224) for the Agent to connect. All JMX exporter ports match the Docker version for monitoring compatibility.
+- **Mode 2**: Connects to a pre-existing remote Docker 3-node Hadoop HA cluster via SSH. Requires the remote cluster to be already running.
 
 Upon completion, the script prints the public URL:
 
 ```
 ############################################################
-#  部署完成!
+#  Deployment complete!
 #
-#  本地访问:    http://127.0.0.1:8000
-#  公网访问:    https://rc-xxxxx.radeon.firstdg.ai
-#  健康检查:    curl http://127.0.0.1:8000/health
-#  Agent 日志:  /workspace/agent.log
-#  LLM 日志:   /workspace/llama-server.log
+#  Local access:  http://127.0.0.1:8000
+#  Public access: https://rc-xxxxx.radeon.firstdg.ai
+#  Agent log:     /workspace/agent.log
+#  LLM log:       /workspace/llama-server.log
 #
-#  运行 Demo:  bash scripts/demo.sh
+#  Run demo:      bash scripts/demo.sh
 ############################################################
 ```
 
@@ -178,8 +168,11 @@ Upon completion, the script prints the public URL:
 curl http://127.0.0.1:8000/health
 # Expected: {"status":"healthy","llm_reachable":true,"db_ok":true}
 
-# Check Hadoop cluster
-docker exec hadoop01 bash -c 'export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64; /opt/hadoop/bin/hdfs dfsadmin -report' | head -15
+# Check Hadoop cluster (single-node direct install)
+/opt/hadoop/bin/hdfs dfsadmin -report | head -15
+
+# Run unified health check
+bash scripts/healthcheck.sh
 
 # Open web console in browser
 # Use the public URL printed by setup-cloud.sh
@@ -192,9 +185,9 @@ bash scripts/demo.sh
 ```
 
 This script:
-1. Injects a fault: stops DataNode on hadoop03
+1. Injects a fault: stops DataNode
 2. Waits for the Agent to detect, diagnose, and repair (≤120s)
-3. Verifies cluster recovery (3/3 DataNodes online)
+3. Verifies cluster recovery (DataNode online)
 4. Prints the repair session summary and audit log
 
 ### Manual Step-by-Step (Alternative to One-Click)
@@ -208,28 +201,25 @@ bash scripts/build-llama.sh
 # 2. Download model + start llama-server (local only, no rc-tunnel)
 bash scripts/bootstrap.sh
 
-# 3. Install Docker
-bash scripts/setup-docker.sh
+# 3. Install Hadoop cluster (single-node direct install)
+bash scripts/setup-hadoop-direct.sh
 
-# 4. Download tarballs
-bash scripts/download-tarballs.sh
+# 4. Run health check
+bash scripts/healthcheck.sh
 
-# 5. Build + start Hadoop cluster
-cd deploy && bash up.sh && bash scripts/init-cluster.sh && cd ..
-
-# 6. Install Python deps
+# 5. Install Python deps
 pip3 install -r requirements.txt --break-system-packages
 
-# 7. Build frontend
+# 6. Build frontend
 bash scripts/build-frontend.sh
 
-# 8. Configure + start
+# 7. Configure + start
 cp .env.example .env
-# Edit .env: set LLM_API_KEY, etc.
+# Edit .env: set LLM_API_KEY, SSH_KEY_PATH, etc.
 source .env
 python3 -m main
 
-# 9. Expose via rc-tunnel (expose web console, not LLM)
+# 8. Expose via rc-tunnel (expose web console, not LLM)
 ~/.local/bin/rc-tunnel expose --port 8000
 ```
 
@@ -245,34 +235,38 @@ bash scripts/demo.sh
 
 ```
 ════════════════════════════════════════
- 1/5 前置检查
+ 0/5 Pre-check
 ════════════════════════════════════════
-  [PASS] Agent 在运行
-  [PASS] Hadoop 集群在运行
-  [PASS] DataNode: 3/3 在线
+  [PASS] Agent is running
+  [PASS] Hadoop cluster is running
+  [PASS] DataNode: 1/1 online
 
 ════════════════════════════════════════
- 2/5 注入故障: 停止 hadoop03 DataNode
+ 1/5 Inject fault: stop DataNode
 ════════════════════════════════════════
-  [PASS] DataNode on hadoop03 已停止
+  [PASS] DataNode stopped
 
 ════════════════════════════════════════
- 3/5 等待 Agent 自动检测 + 修复
+ 2/5 Wait for Agent auto-detect + repair (max 120s)
 ════════════════════════════════════════
-  ... Agent 正在诊断中 ...
-  [PASS] DataNode on hadoop03 已恢复! (等待 42s)
+  ... Agent is diagnosing ...
+  [PASS] DataNode recovered! (waited 42s)
 
 ════════════════════════════════════════
- 4/5 验证集群恢复
+ 3/5 Verify cluster recovery
 ════════════════════════════════════════
-  [PASS] HDFS DataNode: 3/3 在线
+  [PASS] HDFS DataNode: 1/1 online
 
 ════════════════════════════════════════
- 5/5 Demo 完成
+ 4/5 Agent repair records
 ════════════════════════════════════════
-  ✓ 故障注入: DataNode STOPPED on hadoop03
-  ✓ Agent 自主: 检测 → 诊断 → 重启 → 验证
-  ✓ 结果: 集群恢复, 3/3 DataNode 在线
+
+════════════════════════════════════════
+ 5/5 Demo complete
+════════════════════════════════════════
+  ✓ Fault injected: DataNode STOPPED
+  ✓ Agent autonomous: detect → diagnose → restart → verify
+  ✓ Result: cluster recovered, 1/1 DataNode online
 ```
 
 ---
@@ -348,14 +342,14 @@ Classification authority belongs to rules (DB), not the model. Fail-closed: unkn
 Radeon-hackathon/
 ├── scripts/                     # Deployment & demo scripts
 │   ├── setup-cloud.sh           # ★ One-click deploy (AMD Cloud)
+│   ├── setup-hadoop-direct.sh   # ★ Single-node Hadoop direct install
 │   ├── demo.sh                  # ★ One-click demo (inject fault → repair)
-│   ├── export-cluster.sh        # Export image + volumes (for Path A)
+│   ├── healthcheck.sh           # Hadoop cluster health check (Docker/direct)
 │   ├── build-llama.sh           # Compile llama.cpp with ROCm
-│   ├── setup-docker.sh          # Install Docker-in-Docker
-│   ├── download-tarballs.sh     # Download Hadoop tarballs (Path C)
 │   ├── build-frontend.sh        # Build React frontend (production)
-│   ├── bootstrap.sh             # Start llama-server (model download)
-│   └── healthcheck.sh           # Hadoop cluster health check
+│   ├── download-tarballs.sh     # Download Hadoop tarballs
+│   ├── export-cluster.sh        # Export Docker image + volumes (for remote HA)
+│   └── bootstrap.sh             # Start llama-server (model download)
 ├── src/                         # Python backend
 │   ├── main.py                  # Entry point: FastAPI + Orchestrator
 │   ├── config.py                # Configuration (env var driven)
@@ -378,7 +372,6 @@ Radeon-hackathon/
 │   ├── image/Dockerfile         # Multi-role Hadoop image
 │   ├── config/                  # Hadoop/Hive/HBase/ZK/Prometheus/Grafana
 │   └── scripts/                 # init-cluster.sh, restart-daemons.sh
-├── bench/                       # Benchmark scripts
 ├── docs/                        # Design docs, test report, TODO
 ├── requirements.txt             # Python dependencies
 └── .env.example                 # Environment variable template
@@ -397,8 +390,8 @@ All configuration is driven by environment variables (see `.env.example`):
 | `LLM_MODEL` | `/workspace/Qwopus3.6-...gguf` | Model file path |
 | `AUTONOMY` | `supervised` | `supervised` (manual approval) or `autonomous` (auto-execute) |
 | `PROMPT_LANGUAGE` | `en` | Prompt language (`en` / `zh`) |
-| `CLUSTER_BACKEND` | `apache` | Cluster type (`apache` for docker-compose) |
-| `SSH_KEY_PATH` | (from deploy) | SSH key for Hadoop containers |
+| `CLUSTER_BACKEND` | `apache` | Cluster type (`apache` for Hadoop) |
+| `SSH_KEY_PATH` | (from deploy) | SSH key for Hadoop nodes |
 
 > `scripts/setup-cloud.sh` auto-generates `.env` with correct values.
 
@@ -428,4 +421,4 @@ All configuration is driven by environment variables (see `.env.example`):
 | Orchestration | Hand-written ReAct loop | No heavy framework, fully controllable |
 | Database | SQLite (single file) | Events, audit, state card, KB — zero extra services |
 | Monitoring | Prometheus + Grafana | Standard big-data monitoring stack |
-| Cluster | Docker-in-Docker | 3-node Hadoop HA, reproducible |
+| Cluster | Single-node direct install | No Docker needed, works on AMD Cloud |

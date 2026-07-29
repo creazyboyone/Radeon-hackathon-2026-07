@@ -884,6 +884,7 @@ runbooks(
 
 | 方案 | 状态 | 说明 |
 |---|---|---|
-| **单节点直装** | 进行中 | host 上直接装 Hadoop/ZK/HBase + supervisord + 3 SSH 端口伪 3 节点。Demo 效果不变 |
+| **单节点直装** | ✅ 已完成 | host 上直接装 Hadoop/ZK/HBase/Hive/Tez/MySQL + supervisord + 3 SSH 端口。Demo 效果不变。脚本: `scripts/setup-hadoop-direct.sh` |
+| **统一健康检查** | ✅ 已完成 | `scripts/healthcheck.sh` — 双模式兼容 (Docker 3节点 HA / 单节点直装), 自动检测模式 |
 | **远程 HA 集群** | 待定 | 在独立服务器上跑 Docker 3 节点 HA, AMD Cloud agent 通过 SSH 隧道连接 |
 - 主环境持久存储：`/workspace` 20G 持久卷（放模型），overlay 根非持久

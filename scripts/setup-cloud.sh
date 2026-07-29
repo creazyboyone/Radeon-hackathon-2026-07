@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# setup-cloud.sh — AMD Cloud 一键部署脚本
+# setup-cloud.sh — AMD Cloud one-click deployment script
 #
-# 用法: bash scripts/setup-cloud.sh
+# Usage: bash scripts/setup-cloud.sh
 #
-# 交互式选择集群模式:
-#   1) 本地单节点 — 在 AMD Cloud host 上直装 Hadoop (无 Docker, 无 HA)
-#   2) 远程 HA 集群 — 连接远程 Docker 3 节点 Hadoop HA (需要远程 SSH)
+# Interactive cluster mode selection:
+#   1) Local single-node — Direct Hadoop install on AMD Cloud host (no Docker, no HA)
+#   2) Remote HA cluster — Connect to remote Docker 3-node Hadoop HA (requires remote SSH)
 #
-# 通用步骤 (两种模式都执行):
-#   1. 编译 llama.cpp (ROCm)
-#   2. 模型下载 + 启动 llama-server (bootstrap.sh)
-#   3. 安装 Python 依赖
-#   4. 构建前端
-#   5. 启动 Agent + Web
-#   6. rc-tunnel 公网暴露
+# Common steps (both modes):
+#   1. Compile llama.cpp (ROCm)
+#   2. Download model + start llama-server (bootstrap.sh)
+#   3. Install Python dependencies
+#   4. Build frontend
+#   5. Start Agent + Web
+#   6. rc-tunnel public exposure
 set -euo pipefail
 
 # ============================================================
-# 配置
+# Configuration
 # ============================================================
 export LLAMA_API_KEY="${LLAMA_API_KEY:-aiops-$(date +%s)}"
 export LLM_API_KEY="$LLAMA_API_KEY"
@@ -35,105 +35,105 @@ LOG_FILE="/workspace/setup-cloud.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo ""
 echo "############################################################"
-echo "#  AIOps Agent — AMD Cloud 一键部署"
-echo "#  时间: $(date)"
-echo "#  项目: $PROJ_DIR"
+echo "#  AIOps Agent — AMD Cloud One-Click Deployment"
+echo "#  Time: $(date)"
+echo "#  Project: $PROJ_DIR"
 echo "############################################################"
 echo ""
 
 # ============================================================
-# 交互式选择集群模式
+# Interactive cluster mode selection
 # ============================================================
-echo "请选择 Hadoop 集群模式:"
-echo "  1) 本地单节点 — 在 AMD Cloud host 上直装 Hadoop (无 Docker, 无 HA)"
-echo "  2) 远程 HA 集群 — 连接远程 Docker 3 节点 Hadoop HA"
+echo "Select Hadoop cluster mode:"
+echo "  1) Local single-node — Direct Hadoop install on AMD Cloud host (no Docker, no HA)"
+echo "  2) Remote HA cluster — Connect to remote Docker 3-node Hadoop HA"
 echo ""
-read -p "请输入 1 或 2 [默认 1]: " CLUSTER_MODE
+read -p "Enter 1 or 2 [default 1]: " CLUSTER_MODE
 CLUSTER_MODE="${CLUSTER_MODE:-1}"
 echo ""
 
 if [ "$CLUSTER_MODE" = "1" ]; then
-  echo "  已选: 本地单节点直装"
+  echo "  Selected: Local single-node direct install"
 else
-  echo "  已选: 远程 HA 集群"
-  read -p "  远程集群 SSH 地址 (如 8.148.228.51): " REMOTE_HOST
-  read -p "  远程 SSH 端口 [默认 22]: " REMOTE_PORT
+  echo "  Selected: Remote HA cluster"
+  read -p "  Remote cluster SSH address (e.g. 8.148.228.51): " REMOTE_HOST
+  read -p "  Remote SSH port [default 22]: " REMOTE_PORT
   REMOTE_PORT="${REMOTE_PORT:-22}"
-  read -p "  远程 hadoop01 SSH 端口 [默认 2222]: " NODE01_PORT
+  read -p "  Remote hadoop01 SSH port [default 2222]: " NODE01_PORT
   NODE01_PORT="${NODE01_PORT:-2222}"
-  read -p "  远程 hadoop02 SSH 端口 [默认 2223]: " NODE02_PORT
+  read -p "  Remote hadoop02 SSH port [default 2223]: " NODE02_PORT
   NODE02_PORT="${NODE02_PORT:-2223}"
-  read -p "  远程 hadoop03 SSH 端口 [默认 2224]: " NODE03_PORT
+  read -p "  Remote hadoop03 SSH port [default 2224]: " NODE03_PORT
   NODE03_PORT="${NODE03_PORT:-2224}"
   echo ""
 fi
 
 # ============================================================
-# Step 1: 编译 llama.cpp
+# Step 1: Compile llama.cpp
 # ============================================================
-echo "===== Step 1/6: 编译 llama.cpp (ROCm) ====="
+echo "===== Step 1/6: Compile llama.cpp (ROCm) ====="
 if [ -x /opt/llama.cpp/llama-server ]; then
-  echo "  已编译, 跳过"
+  echo "  Already compiled, skipping"
 else
   bash scripts/build-llama.sh
 fi
 
 # ============================================================
-# Step 2: 模型下载 + 启动 llama-server
+# Step 2: Model download + start llama-server
 # ============================================================
 echo ""
-echo "===== Step 2/6: 模型下载 + 启动 llama-server ====="
+echo "===== Step 2/6: Model download + start llama-server ====="
 export LLAMA_API_KEY
 bash scripts/bootstrap.sh
 
 # ============================================================
-# Step 3: Hadoop 集群
+# Step 3: Hadoop cluster
 # ============================================================
 echo ""
-echo "===== Step 3/6: Hadoop 集群 ====="
+echo "===== Step 3/6: Hadoop cluster ====="
 
 if [ "$CLUSTER_MODE" = "1" ]; then
-  # ---- 本地单节点直装 ----
-  echo "  [本地单节点] 直装 Hadoop + ZK + HBase + Hive + Tez + MySQL + supervisord ..."
+  # ---- Local single-node direct install ----
+  echo "  [Local single-node] Direct install Hadoop + ZK + HBase + Hive + Tez + MySQL + supervisord ..."
   bash scripts/setup-hadoop-direct.sh
 else
-  # ---- 远程 HA 集群 ----
-  echo "  [远程 HA] 连接远程集群 $REMOTE_HOST:$REMOTE_PORT"
+  # ---- Remote HA cluster ----
+  echo "  [Remote HA] Connecting to remote cluster $REMOTE_HOST:$REMOTE_PORT"
   echo "    hadoop01: $REMOTE_HOST:$NODE01_PORT"
   echo "    hadoop02: $REMOTE_HOST:$NODE02_PORT"
   echo "    hadoop03: $REMOTE_HOST:$NODE03_PORT"
   echo ""
-  echo "  测试 SSH 连通性 ..."
+  echo "  Testing SSH connectivity ..."
   ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -p "$REMOTE_PORT" "root@$REMOTE_HOST" "echo OK" 2>/dev/null \
-    && echo "  SSH 连通: OK" \
-    || { echo "  [错误] SSH 连不上 $REMOTE_HOST:$REMOTE_PORT"; echo "  请确认远程集群已启动"; exit 1; }
+    && echo "  SSH connected: OK" \
+    || { echo "  [ERROR] SSH connection failed to $REMOTE_HOST:$REMOTE_PORT"; echo "  Please confirm remote cluster is running"; exit 1; }
 fi
 
 # ============================================================
-# Step 4: 安装 Python 依赖
+# Step 4: Install Python dependencies
 # ============================================================
 echo ""
-echo "===== Step 4/6: 安装 Python 依赖 ====="
+echo "===== Step 4/6: Install Python dependencies ====="
 pip3 install -r requirements.txt --break-system-packages -q 2>&1 | tail -3
 
 # ============================================================
-# Step 5: 构建前端 + 生成配置 + 启动 Agent
+# Step 5: Build frontend + generate config + start Agent
 # ============================================================
 echo ""
-echo "===== Step 5/6: 构建前端 + 启动 Agent ====="
+echo "===== Step 5/6: Build frontend + start Agent ====="
 
-# 构建前端
+# Build frontend
 if [ -f "$PROJ_DIR/web/dist/index.html" ]; then
-  echo "  前端已构建, 跳过"
+  echo "  Frontend already built, skipping"
 else
   bash scripts/build-frontend.sh
 fi
 
-# 生成 .env
+# Generate .env
 SSH_KEY_PATH="$PROJ_DIR/deploy/config/ssh/id_rsa"
 
 if [ "$CLUSTER_MODE" = "1" ]; then
-  # 本地单节点: 所有 SSH 都连 localhost
+  # Local single-node: all SSH connects to localhost
   cat > "$PROJ_DIR/.env" << EOF
 export LLM_BASE_URL="$LLM_BASE_URL"
 export LLM_API_KEY="$LLAMA_API_KEY"
@@ -155,7 +155,7 @@ export ALERTMANAGER_URL=http://localhost:9093
 export GRAFANA_URL=http://localhost:3000
 EOF
 else
-  # 远程 HA 集群
+  # Remote HA cluster
   cat > "$PROJ_DIR/.env" << EOF
 export LLM_BASE_URL="$LLM_BASE_URL"
 export LLM_API_KEY="$LLAMA_API_KEY"
@@ -178,78 +178,119 @@ export GRAFANA_URL=http://$REMOTE_HOST:3000
 EOF
 fi
 
-echo "  .env 已生成"
+echo "  .env generated"
 
-# 杀旧 Agent 进程
+# Kill old Agent process
 pkill -f "python.*main.py" 2>/dev/null || true
 sleep 2
 
-# 启动 Agent + Web
+# Start Agent + Web
 cd "$PROJ_DIR"
 source .env
 nohup python3 -m main > /workspace/agent.log 2>&1 &
-echo "  Agent 启动中 (PID $!)"
+echo "  Agent starting (PID $!)"
 
-echo "  等待 Web 就绪..."
+echo "  Waiting for web to be ready..."
 for i in $(seq 1 30); do
   if curl -sf http://127.0.0.1:8000/health >/dev/null 2>&1; then
-    echo "  Web 就绪 (${i}s)"
+    echo "  Web ready (${i}s)"
     HEALTH=$(curl -s http://127.0.0.1:8000/health)
-    echo "  健康检查: $HEALTH"
+    echo "  Health check: $HEALTH"
     break
   fi
   sleep 2
 done
 
 # ============================================================
-# Step 6: rc-tunnel 公网暴露
+# Step 6: rc-tunnel public exposure
 # ============================================================
 echo ""
-echo "===== Step 6/6: rc-tunnel 公网暴露 ====="
+echo "===== Step 6/6: rc-tunnel public exposure ====="
 RC_TUNNEL="$HOME/.local/bin/rc-tunnel"
 
+# Install rc-tunnel if not present
 if [ ! -x "$RC_TUNNEL" ]; then
-  echo "  安装 rc-tunnel..."
+  echo "  rc-tunnel not found, installing..."
   if [ -f /var/run/secrets/frp-self-service/install ]; then
-    /var/run/secrets/frp-self-service/install 2>&1 || echo "  [警告] rc-tunnel 安装失败"
+    bash /var/run/secrets/frp-self-service/install 2>&1
+    # Re-check after install
+    if [ ! -x "$RC_TUNNEL" ]; then
+      # Maybe installed to a different path, try finding it
+      RC_TUNNEL=$(which rc-tunnel 2>/dev/null || find /root/.local/bin /usr/local/bin /usr/bin -name rc-tunnel -type f 2>/dev/null | head -1)
+    fi
   else
-    echo "  [提示] rc-tunnel 不可用, 可能需重建 Notebook"
+    echo "  [WARN] /var/run/secrets/frp-self-service/install not found"
+    echo "  [INFO] May need to recreate Notebook to get rc-tunnel"
   fi
 fi
 
 if [ -x "$RC_TUNNEL" ]; then
+  echo "  rc-tunnel found: $RC_TUNNEL"
+
+  # Stop any existing tunnel first
   "$RC_TUNNEL" stop >/dev/null 2>&1 || true
   sleep 2
-  echo "  暴露端口 8000..."
+
+  # Expose port 8000
+  echo "  Exposing port 8000..."
   TUNNEL_OUTPUT=$("$RC_TUNNEL" expose --port 8000 2>&1)
+  echo "  Raw output: $TUNNEL_OUTPUT"
+
+  # Extract public URL (format: https://rc-xxx.radeon.firstdg.ai)
   TUNNEL_URL=$(echo "$TUNNEL_OUTPUT" | grep -oE 'https://rc-[a-z0-9]+\.radeon\.firstdg\.ai' | head -1)
-  echo "$TUNNEL_URL" > /workspace/tunnel_url.txt
 
   if [ -n "$TUNNEL_URL" ]; then
+    echo "$TUNNEL_URL" > /workspace/tunnel_url.txt
     echo ""
     echo "  ============================================"
-    echo "  公网访问地址: $TUNNEL_URL"
+    echo "  Public URL: $TUNNEL_URL"
     echo "  ============================================"
+
+    # Verify connectivity (wait for FRP to establish)
+    echo "  Verifying connectivity (waiting 5s)..."
+    sleep 5
+    if curl -sf --connect-timeout 10 -m 15 "$TUNNEL_URL/health" >/dev/null 2>&1; then
+      echo "  Public access: OK"
+    else
+      echo "  [WARN] Not ready yet, FRP may still be connecting"
+      echo "  Manual check: curl $TUNNEL_URL/health"
+    fi
   else
-    echo "  [警告] 未获取到公网 URL"
+    echo "  [WARN] Failed to extract public URL from output"
+    echo "  Try manual: $RC_TUNNEL expose --port 8000"
+    # Check tunnel status for debugging
+    "$RC_TUNNEL" status 2>&1 || true
   fi
 else
-  echo "  本地访问: http://127.0.0.1:8000"
+  echo "  [WARN] rc-tunnel not available"
+  echo "  Local access only: http://127.0.0.1:8000"
 fi
 
 # ============================================================
-# 完成
+# Complete
 # ============================================================
+# Read tunnel URL from file as fallback (variable may be out of scope)
+if [ -z "${TUNNEL_URL:-}" ] && [ -f /workspace/tunnel_url.txt ]; then
+  TUNNEL_URL=$(cat /workspace/tunnel_url.txt)
+fi
+
 echo ""
 echo "############################################################"
-echo "#  部署完成!"
+echo "#  Deployment complete!"
 echo "#"
-echo "#  本地访问:    http://127.0.0.1:8000"
+echo "#  Local access:  http://127.0.0.1:8000"
 if [ -n "${TUNNEL_URL:-}" ]; then
-  echo "#  公网访问:    $TUNNEL_URL"
+  echo "#  Public access: $TUNNEL_URL"
 fi
-echo "#  Agent 日志:  /workspace/agent.log"
-echo "#  LLM 日志:   /workspace/llama-server.log"
+echo "#  Agent log:     /workspace/agent.log"
+echo "#  LLM log:       /workspace/llama-server.log"
 echo "#"
-echo "#  运行 Demo:  bash scripts/demo.sh"
+echo "#  Run demo:      bash scripts/demo.sh"
 echo "############################################################"
+echo ""
+if [ -n "${TUNNEL_URL:-}" ]; then
+  echo ">>> Open in browser: $TUNNEL_URL"
+else
+  echo ">>> Open in browser: http://127.0.0.1:8000"
+fi
+echo ""

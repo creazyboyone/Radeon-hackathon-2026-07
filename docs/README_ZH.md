@@ -1,8 +1,10 @@
 # AIOps Agent — 大数据集群自治运维
 
 > [English](./README.md) | **中文**
-
-基于 LLM (Qwen 27B + ROCm) 的大数据平台自治运维 Agent，实现 24h 无人值守巡检 → 告警驱动诊断 → 安全护栏修复 → 验证恢复的全闭环。
+>
+> **赛道2: 私有 AI Agent 开发与本地部署**
+>
+> 基于 LLM (Qwen 27B + ROCm) 的大数据平台自治运维 Agent，实现 24h 无人值守巡检 → 告警驱动诊断 → 安全护栏修复 → 验证恢复的全闭环。
 
 ## 架构
 
@@ -10,9 +12,9 @@
 Orchestrator (master session, 常驻规则调度)
   ├── /auto 巡检 (ReAct agent, 15 轮)
   └── /fix 修复 (告警驱动抢占, ReAct agent, 15 轮)
-         ├── 工具层: CM API + SSH (8 个工具)
-         │   ├── 只读: get_service_status / get_alerts / get_metrics / read_logs / search_kb / hdfs_admin
-         │   └── 写操作: restart_service (CM API) / edit_remote_config (备份→改→reload)
+         ├── 工具层: SSH + Prometheus (10 个工具)
+         │   ├── 只读: get_service_status / get_alerts / get_metrics / read_logs / search_kb / hdfs_admin / diagnose_node
+         │   └── 写操作: restart_service (SSH) / edit_remote_config (备份→改→reload) / file_ops
          ├── 安全护栏 (§21 双轴四档分级自治):
          │   ├── 轴1 AUTONOMY: supervised (人工审批) / autonomous (无人值守)
          │   ├── 轴2 tier: low / medium / recover / reversible / irreversible
@@ -28,58 +30,65 @@ DB: SQLite (sessions/events/cluster_state/audit_log/approvals/risk_rules)
 Web: FastAPI + WebSocket (后端) / React + Vite + Ant Design (前端)
 ```
 
+## 集群模式
+
+| 模式 | 说明 | 适用场景 |
+|------|------|---------|
+| **本地单节点直装** | AMD Cloud host 上直接安装 Hadoop/ZK/HBase/Hive/Tez/MySQL + supervisord | 评委复现 (推荐) |
+| **远程 3节点 HA** | 连接远程 Docker 3节点 Hadoop HA 集群 (SSH) | 完整 HA 效果 |
+
+> AMD Cloud JupyterLab 容器不支持 Docker-in-Docker (缺 `CAP_SYS_ADMIN`, seccomp 拦截 user namespace)。本地单节点直装模式绕过此限制。
+
 ## 快速开始
 
-### 1. 环境
-```bash
-# 后端依赖
-pip install -r requirements.txt
+### 一键部署 (AMD Cloud)
 
-# 前端依赖
-cd web && npm install
+```bash
+bash scripts/setup-cloud.sh
 ```
 
-### 2. 远程推理服务器 (AMD Radeon GPU)
-```bash
-# 上传并执行 bootstrap.sh (自动安装 SSH + modelscope 下载模型 + 启动 llama-server)
-scp -P <PORT> scripts/bootstrap.sh root@<REMOTE_IP>:/workspace/
-ssh -p <PORT> root@<REMOTE_IP> "sed -i 's/\r$//' /workspace/bootstrap.sh && bash /workspace/bootstrap.sh"
+脚本自动完成:
+1. 编译 llama.cpp (ROCm/HIPBLAS)
+2. 下载模型 + 启动 llama-server
+3. 安装 Hadoop 集群 (单节点直装)
+4. 安装 Python 依赖
+5. 构建前端
+6. 启动 Agent + Web
+7. rc-tunnel 公网暴露
 
-# SSH 隧道: 本地 18080 → 远程 llama-server 8080
-ssh -o ServerAliveInterval=30 -L 18080:127.0.0.1:8080 -p <PORT> root@<REMOTE_IP> -N
+### 一键演示
+
+```bash
+bash scripts/demo.sh
 ```
 
-### 3. 配置
-```python
-# src/secrets_local.py (不提交, 从 secrets_example.py 复制)
-LLM_API_KEY = "<your_api_key>"
-HADOOP_PASSWORD = "<your_password>"
+流程: 注入故障 (kill DataNode) → 等待 Agent 检测 → 诊断 → 修复 → 验证
 
-# src/config.py (已默认配置, 按需修改)
-LLM_BASE_URL = "http://127.0.0.1:18080/v1"
-LLM_MODEL = "/workspace/Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf"
-CLUSTER_NODES = ["hadoop01", "hadoop02", "hadoop03"]
-AUTONOMY = "supervised"  # 或 "autonomous" (无人值守)
-```
+### 手动分步
 
-### 4. 启动
-
-**启动 Hadoop 集群 (Docker):**
 ```bash
-cd deploy
-bash up.sh                    # 构建镜像 + 启动容器
-bash scripts/init-cluster.sh  # 首次: 格式化 HDFS, 引导备 NN, 启动 master 守护进程
-```
-集群详情见 `deploy/README.md` (HDFS/YARN/HBase HA, Grafana 仪表盘, SSH 访问)。
+# 1. 编译 llama.cpp
+bash scripts/build-llama.sh
 
-**启动 AIOps Agent:**
-```bash
-# 后端 (API + WebSocket + orchestrator 巡检)
-python main.py
+# 2. 下载模型 + 启动 llama-server
+bash scripts/bootstrap.sh
 
-# 前端 (另一个终端)
-cd web && npm run dev
-# 打开 http://localhost:3000
+# 3. 安装 Hadoop 集群 (单节点直装)
+bash scripts/setup-hadoop-direct.sh
+
+# 4. 健康检查
+bash scripts/healthcheck.sh
+
+# 5. 安装 Python 依赖
+pip3 install -r requirements.txt --break-system-packages
+
+# 6. 构建前端
+bash scripts/build-frontend.sh
+
+# 7. 配置 + 启动
+cp .env.example .env
+source .env
+python3 -m main
 ```
 
 ## 功能模块
@@ -87,12 +96,12 @@ cd web && npm run dev
 | 模块 | 状态 | 说明 |
 |---|---|---|
 | M1 推理基座 | ✅ | llama.cpp ROCm/HIPBLAS, Qwen27B Q4_K_M, MTP 投机解码 |
-| M2 工具层 | ✅ | SSH 工具层, 8 个工具 (6 只读 + restart_service + edit_remote_config), docker-compose Hadoop HA 集群 |
+| M2 工具层 | ✅ | SSH 工具层, 10 个工具 (7 只读 + restart_service + edit_remote_config + file_ops), Hadoop 集群 |
 | M3 编排层 | ✅ | Orchestrator 常驻 + /auto 巡检 + /fix 抢占 + SQLite 落库 |
 | §21 安全护栏 | ✅ | 双轴四档 (AUTONOMY × tier) + risk_rules DB + classify + attempt 节流 |
 | M5 KB 检索 | ✅ | 混合检索: bge-small-zh 向量 + BM25 FTS5 (自动降级) |
 | M6 Web 控制台 | ✅ | FastAPI+WebSocket 后端, React+Vite+AntDesign 前端 |
-| M7 演示提交 | 待做 | 录屏 + 性能数据 |
+| M7 演示提交 | ✅ | 录屏 + 性能数据 + README 复现步骤 |
 
 ## AMD Radeon GPU 推理优化
 
@@ -139,40 +148,42 @@ cd web && npm run dev
 ## 文件结构
 
 ```
-src/
-├── agent.py          # ReAct agent (巡检/修复, 流式输出)
-├── orchestrator.py   # 常驻编排 (master session, /auto+/fix)
-├── llm_client.py     # LLM 客户端 (chat + chat_stream SSE)
-├── tools.py          # 8 个工具 (CM API + SSH)
-├── guardrails.py     # 安全护栏 (§21 双轴四档 + classify + attempt 节流)
-├── db.py             # SQLite Store (sessions/events/audit/approvals/risk_rules)
-├── config.py         # 配置 (从 secrets_local.py 读敏感信息)
+scripts/                    # 部署 & 演示脚本
+├── setup-cloud.sh          # ★ 一键部署 (AMD Cloud)
+├── setup-hadoop-direct.sh  # ★ 单节点 Hadoop 直装
+├── demo.sh                 # ★ 一键演示 (注入故障 → 修复)
+├── healthcheck.sh          # 集群健康检查 (Docker/直装双模式)
+├── build-llama.sh          # 编译 llama.cpp (ROCm)
+├── build-frontend.sh       # 构建前端 (生产模式)
+├── download-tarballs.sh    # 下载 Hadoop tarball
+├── export-cluster.sh       # 导出 Docker 镜像+数据卷
+└── bootstrap.sh            # 启动 llama-server (模型下载)
+src/                        # Python 后端
+├── main.py                 # 入口 (FastAPI + Orchestrator)
+├── orchestrator.py         # 常驻编排 (master session, /auto+/fix)
+├── agent.py                # ReAct agent (巡检/修复, 流式输出)
+├── llm_client.py           # LLM 客户端 (chat + chat_stream SSE)
+├── tools.py                # 10 个工具 (SSH + Prometheus)
+├── guardrails.py           # 安全护栏 (§21 双轴四档)
+├── kb.py                   # 知识库 (向量 + BM25 RAG)
+├── db.py                   # SQLite Store
 └── web/
-    ├── app.py        # FastAPI (REST API + WebSocket + risk_rules CRUD)
-    └── event_bus.py  # 事件总线 (queue.Queue 桥接同步/异步)
-web/                  # React + Vite + Ant Design
+    └── app.py              # FastAPI (REST API + WebSocket + 静态文件)
+web/                        # React + Vite + Ant Design
 ├── src/
-│   ├── App.tsx       # 布局 (Sider+Header+面包屑+Content)
-│   ├── App.css      # 全局样式 + Markdown 渲染
-│   └── components/
-│       ├── AgentActivity.tsx  # Agent 活动台
-│       ├── ApprovalCenter.tsx # 审批中心
-│       ├── RiskRules.tsx      # 风险规则管理
-│       └── KnowledgeBase.tsx  # 知识库 (runbooks)
-main.py               # 入口 (FastAPI 子线程 + orchestrator 主线程)
-scripts/bootstrap.sh   # 远程推理服务器初始化
-bench/                 # 推理性能基准测试 (调优产物)
-├── llm_throughput.py    # LLM 吞吐量基准 (tokens/s, TTFT)
-├── llm_long_context.py # 长上下文性能基准
-└── mtp_speculative.py   # MTP 投机解码对比测试
-deploy/                # Docker 集群部署 (Hadoop HA + 监控)
-├── docker-compose.yml # 3节点 Hadoop HA 集群 + Prometheus + Grafana + SSH
-├── image/             # Dockerfile + entrypoint + supervisord 配置
-├── config/            # Hadoop/HBase/Hive/Tez/ZK/Grafana/Prometheus/SSH 配置
-├── scripts/           # 集群初始化 & 守护进程重启脚本
-└── tests/             # Hive 端到端测试 SQL
-docs/DESIGN.md         # 详细设计文档 (§5 安全护栏, §22 待实现特性)
-docs/TODO.md           # 项目 Checklist
-docs/README.md         # 项目说明 (英文)
-docs/README_ZH.md      # 项目说明 (中文, 本文件)
+│   ├── App.tsx             # 布局 (Sider+Header+面包屑+Content)
+│   └── components/         # AgentActivity, ApprovalCenter, RiskRules, etc.
+deploy/                     # Hadoop 集群部署
+├── docker-compose.yml      # 3节点 Hadoop HA 集群 + 监控
+├── image/                  # Dockerfile + supervisord 配置
+├── config/                 # Hadoop/HBase/Hive/Tez/ZK/Prometheus/Grafana 配置
+└── scripts/                # 集群初始化 & 守护进程重启脚本
+docs/                       # 设计文档, 测试报告, TODO
+├── DESIGN.md               # 详细设计文档 (英文)
+├── DESIGN_ZH.md            # 详细设计文档 (中文)
+├── README.md               # 项目说明 (英文)
+├── README_ZH.md            # 项目说明 (中文, 本文件)
+├── AGENT_TEST_REPORT.md    # Agent 自动修复测试报告
+├── TEST_REPORT.md          # Hadoop 集群功能测试报告
+└── TODO.md                 # 项目 Checklist
 ```

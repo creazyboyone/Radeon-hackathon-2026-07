@@ -81,8 +81,8 @@
 - [x] 多故障剧本跑通（DataNode 掉线 / NameNode SIGTERM / 磁盘满 / MetaStore OOM）
 - [x] 端到端录屏
 - [x] DESIGN.md 英文化（英文作默认主文件，中文保留 `DESIGN_ZH.md`）
-- [ ] **README 复现步骤 + 架构图** ← 当前冲刺目标（实现全云部署，方便评委复现）
-- [ ] 性能数据整理（tokens/s、TTFT、VRAM、故障解决耗时）
+- [x] **README 复现步骤 + 架构图** ← 已完成（实现全云部署，方便评委复现）
+- [x] 性能数据整理（tokens/s、TTFT、VRAM、故障解决耗时）
 - [ ] 文档交叉引用最终核对
 
 ## 缺陷修复（评审发现并已修）
@@ -148,14 +148,16 @@
 - [x] **tarball 下载自动化** — `scripts/download-tarballs.sh`
 - [x] **前端生产构建** — `scripts/build-frontend.sh` + Vite build 配置
 - [x] **.env 环境变量模板** — `.env.example`
-- [x] **一键部署主脚本** — `scripts/setup-cloud.sh`，9 步串起全流程，幂等可重复
+- [x] **一键部署主脚本** — `scripts/setup-cloud.sh`，6 步串起全流程，幂等可重复
 - [x] **集群导出 + 远程托管** — `scripts/export-cluster.sh` 导出镜像+数据卷，托管在 `http://8.148.228.51/repo/aiops-cluster-backup/`
-- [x] **rc-tunnel 公网暴露** — `setup-cloud.sh` Step 8 自动暴露 :8000
+- [x] **rc-tunnel 公网暴露** — `setup-cloud.sh` Step 6 自动暴露 :8000
 
-### 进行中
+### 已完成
 
-- [ ] **单节点 Hadoop 直装** — `scripts/setup-hadoop-direct.sh`：AMD Cloud 不支持 Docker-in-Docker（缺 CAP_SYS_ADMIN + seccomp 拦截 user namespace），改为直接在 host 上安装单节点 Hadoop + ZK + HBase + supervisord + 3 SSH 端口伪 3 节点。Demo 效果不变（注入故障 → Agent 检测 → 修复）
-- [ ] **setup-cloud.sh 适配单节点** — 当 Docker 不可用时自动 fallback 到单节点直装路径
+- [x] **单节点 Hadoop 直装** — `scripts/setup-hadoop-direct.sh`：AMD Cloud 不支持 Docker-in-Docker（缺 CAP_SYS_ADMIN + seccomp 拦截 user namespace），改为直接在 host 上安装单节点 Hadoop + ZK + HBase + Hive + Tez + MySQL + supervisord + 3 SSH 端口。Demo 效果不变（注入故障 → Agent 检测 → 修复）
+- [x] **setup-cloud.sh 适配单节点** — 当 Docker 不可用时自动 fallback 到单节点直装路径
+- [x] **统一健康检查脚本** — `scripts/healthcheck.sh`：双模式兼容（Docker 3节点 HA / 单节点直装），自动检测模式，检查进程/端口/HA状态/读写
+- [x] **所有脚本英文化** — 注释和 echo 输出全部改为英文，方便国际评委阅读
 
 ### 待定（Path 2: 远程 Hadoop HA）
 

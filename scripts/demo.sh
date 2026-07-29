@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# demo.sh — 一键演示 AIOps Agent 闭环 (单节点直装模式)
+# demo.sh — One-click AIOps Agent closed-loop demo
 #
-# 用法: bash scripts/demo.sh
+# Usage: bash scripts/demo.sh
 #
-# 流程: 注入故障 (kill DataNode) → 等待 Agent 检测 → 诊断 → 修复 → 验证
-# 前提: setup-cloud.sh 已执行, Agent 正在运行
+# Flow: Inject fault (kill DataNode) → Wait for Agent to detect → Diagnose → Repair → Verify
+# Prerequisite: setup-cloud.sh has been executed, Agent is running
 set -euo pipefail
 
 PROJ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,28 +23,28 @@ fail()   { echo -e "${C_RED}[$(date +%H:%M:%S)] [FAIL]${NC} $1"; }
 header() { echo -e "\n${C_BOLD}${C_YELLOW}════════════════════════════════════════${NC}"; echo -e "${C_BOLD}${C_YELLOW} $1${NC}"; echo -e "${C_BOLD}${C_YELLOW}════════════════════════════════════════${NC}\n"; }
 
 # ============================================================
-# 检测集群模式: Docker (docker exec) 或 直装 (supervisorctl)
+# Detect cluster mode: Docker (docker exec) or direct install (supervisorctl)
 # ============================================================
 SUPCTL="supervisorctl -c /etc/supervisor/conf.d/supervisord-hadoop01.conf"
 
 if docker exec hadoop01 echo OK >/dev/null 2>&1; then
   MODE="docker"
-  log "检测到 Docker 集群模式"
+  log "Docker cluster mode detected"
 elif bash -c "$SUPCTL status" >/dev/null 2>&1; then
   MODE="direct"
-  log "检测到单节点直装模式"
+  log "Single-node direct install mode detected"
 else
-  fail "Hadoop 集群未运行, 请先执行: bash scripts/setup-cloud.sh"
+  fail "Hadoop cluster not running, please run: bash scripts/setup-cloud.sh"
   exit 1
 fi
 
-# 集群操作封装
+# Cluster operation wrappers
 cluster_exec() {
   local node="$1"; shift
   if [ "$MODE" = "docker" ]; then
     docker exec "$node" "$@"
   else
-    # 直装模式: 所有节点都是 localhost, 直接执行
+    # Direct install: all nodes are localhost, execute directly
     "$@"
   fi
 }
@@ -54,7 +54,7 @@ supervisor_action() {
   if [ "$MODE" = "docker" ]; then
     docker exec "$node" supervisorctl "$action" "$program"
   else
-    # 直装模式: 所有节点共用同一 supervisord
+    # Direct install: all nodes share the same supervisord
     $SUPCTL "$action" "$program"
   fi
 }
@@ -76,7 +76,7 @@ get_hdfs_report() {
   fi
 }
 
-# DataNode 期望数量 (Docker: 3, 直装: 1)
+# Expected DataNode count (Docker: 3, direct: 1)
 if [ "$MODE" = "docker" ]; then
   EXPECTED_DN=3
   FAULT_NODE="hadoop03"
@@ -86,132 +86,132 @@ else
 fi
 
 # ============================================================
-# 0. 前置检查
+# 0. Pre-check
 # ============================================================
-header "0/5 前置检查"
+header "0/5 Pre-check"
 
-# Agent 是否在运行
+# Check if Agent is running
 if curl -sf http://127.0.0.1:8000/health >/dev/null 2>&1; then
   HEALTH=$(curl -s http://127.0.0.1:8000/health)
-  ok "Agent 在运行: $HEALTH"
+  ok "Agent is running: $HEALTH"
 else
-  fail "Agent 未运行, 请先执行: bash scripts/setup-cloud.sh"
+  fail "Agent not running, please run: bash scripts/setup-cloud.sh"
   exit 1
 fi
 
-# Hadoop 集群是否在运行
+# Check if Hadoop cluster is running
 if [ "$MODE" = "docker" ]; then
   if docker exec hadoop01 echo OK >/dev/null 2>&1; then
-    ok "Hadoop 集群在运行 (Docker)"
+    ok "Hadoop cluster is running (Docker)"
   else
-    fail "Hadoop 集群未运行"
+    fail "Hadoop cluster not running"
     exit 1
   fi
 else
   if $SUPCTL status >/dev/null 2>&1; then
-    ok "Hadoop 集群在运行 (直装)"
+    ok "Hadoop cluster is running (direct install)"
   else
-    fail "Hadoop 集群未运行"
+    fail "Hadoop cluster not running"
     exit 1
   fi
 fi
 
-# DataNode 当前状态
+# Current DataNode status
 DN_STATUS=$(get_hdfs_report | grep "Live datanodes" | grep -o '[0-9]*' || true)
 DN_STATUS=${DN_STATUS:-0}
 if [ "$DN_STATUS" -ge "$EXPECTED_DN" ]; then
-  ok "DataNode: $DN_STATUS/$EXPECTED_DN 在线"
+  ok "DataNode: $DN_STATUS/$EXPECTED_DN online"
 else
-  log "DataNode: $DN_STATUS/$EXPECTED_DN 在线 (可能上次 Demo 未完全恢复, 继续执行)"
+  log "DataNode: $DN_STATUS/$EXPECTED_DN online (may be leftover from previous demo, continuing)"
 fi
 
 # ============================================================
-# 1. 注入故障: kill DataNode
+# 1. Inject fault: stop DataNode
 # ============================================================
-header "1/5 注入故障: 停止 DataNode"
+header "1/5 Inject fault: stop DataNode"
 
-log "停止 DataNode 进程..."
+log "Stopping DataNode process..."
 supervisor_action "$FAULT_NODE" stop datanode 2>/dev/null || true
 sleep 3
 
-# 验证 DataNode 确实停了
+# Verify DataNode is actually stopped
 DN_JPS=$(get_jps "$FAULT_NODE" | grep -c "DataNode" || true)
 if [ "$DN_JPS" -eq 0 ]; then
-  ok "DataNode 已停止"
+  ok "DataNode stopped"
 else
-  log "DataNode 进程可能仍在 (jps=$DN_JPS), 继续等待 Agent 检测"
+  log "DataNode process may still be running (jps=$DN_JPS), continuing to wait for Agent detection"
 fi
 
 # ============================================================
-# 2. 等待 Agent 检测 + 修复 (最多 120s)
+# 2. Wait for Agent to detect + repair (max 120s)
 # ============================================================
-header "2/5 等待 Agent 自动检测 + 修复 (最多 120s)"
+header "2/5 Wait for Agent auto-detect + repair (max 120s)"
 
-log "等待 Agent 巡检周期触发..."
-log "可同时打开 Web 控制台查看实时 Agent 活动:"
+log "Waiting for Agent inspection cycle to trigger..."
+log "Open the web console to view real-time Agent activity:"
 if [ -f /workspace/tunnel_url.txt ]; then
   TUNNEL_URL=$(cat /workspace/tunnel_url.txt)
-  log "  公网: $TUNNEL_URL"
+  log "  Public: $TUNNEL_URL"
 else
-  log "  本地: http://127.0.0.1:8000"
+  log "  Local: http://127.0.0.1:8000"
 fi
 echo ""
 
 REPAIRED=false
 for i in $(seq 1 60); do
   sleep 2
-  # 检查 DataNode 是否恢复
+  # Check if DataNode has recovered
   DN_JPS=$(get_jps "$FAULT_NODE" | grep -c "DataNode" || true)
   if [ "$DN_JPS" -gt 0 ]; then
-    ok "DataNode 已恢复! (等待 ${i}x2s)"
+    ok "DataNode recovered! (waited ${i}x2s)"
     REPAIRED=true
     break
   fi
-  # 进度提示
+  # Progress indicator
   if [ $((i % 10)) -eq 0 ]; then
-    log "  ... 仍在等待 (${i}x2s), Agent 正在诊断中"
+    log "  ... still waiting (${i}x2s), Agent is diagnosing"
   fi
 done
 
 if [ "$REPAIRED" = false ]; then
-  fail "Agent 未能在 120s 内修复, 检查日志: /workspace/agent.log"
+  fail "Agent failed to repair within 120s, check log: /workspace/agent.log"
   if [ "$MODE" = "docker" ]; then
-    log "手动恢复: docker exec $FAULT_NODE supervisorctl start datanode"
+    log "Manual recovery: docker exec $FAULT_NODE supervisorctl start datanode"
   else
-    log "手动恢复: $SUPCTL start datanode"
+    log "Manual recovery: $SUPCTL start datanode"
   fi
   exit 1
 fi
 
 # ============================================================
-# 3. 验证集群恢复
+# 3. Verify cluster recovery
 # ============================================================
-header "3/5 验证集群恢复"
+header "3/5 Verify cluster recovery"
 
-sleep 5  # 等待 DataNode 注册
+sleep 5  # Wait for DataNode registration
 
 DN_STATUS=$(get_hdfs_report | grep "Live datanodes" | grep -o '[0-9]*' || true)
 DN_STATUS=${DN_STATUS:-0}
 if [ "$DN_STATUS" -ge "$EXPECTED_DN" ]; then
-  ok "HDFS DataNode: $DN_STATUS/$EXPECTED_DN 在线"
+  ok "HDFS DataNode: $DN_STATUS/$EXPECTED_DN online"
 else
-  log "DataNode: $DN_STATUS/$EXPECTED_DN (可能需要更多时间注册, 等 10s...)"
+  log "DataNode: $DN_STATUS/$EXPECTED_DN (may need more time to register, waiting 10s...)"
   sleep 10
   DN_STATUS=$(get_hdfs_report | grep "Live datanodes" | grep -o '[0-9]*' || true)
   DN_STATUS=${DN_STATUS:-0}
   if [ "$DN_STATUS" -ge "$EXPECTED_DN" ]; then
-    ok "HDFS DataNode: $DN_STATUS/$EXPECTED_DN 在线 (延迟注册)"
+    ok "HDFS DataNode: $DN_STATUS/$EXPECTED_DN online (delayed registration)"
   else
-    fail "DataNode 仅 $DN_STATUS/$EXPECTED_DN 在线"
+    fail "DataNode only $DN_STATUS/$EXPECTED_DN online"
   fi
 fi
 
 # ============================================================
-# 4. 查看 Agent 修复记录
+# 4. View Agent repair records
 # ============================================================
-header "4/5 Agent 修复记录"
+header "4/5 Agent repair records"
 
-log "最近 fix session:"
+log "Recent fix sessions:"
 curl -s http://127.0.0.1:8000/api/sessions?type=fix 2>/dev/null | \
   python3 -c "
 import sys, json
@@ -221,10 +221,10 @@ for s in sessions[:3]:
     sid = s.get('id','?')[:8]
     trigger = s.get('trigger','?')
     print(f'  [{status}] {sid} trigger={trigger}')
-" 2>/dev/null || log "  (查询失败, 可在 Web 控制台查看)"
+" 2>/dev/null || log "  (query failed, view in web console)"
 
 log ""
-log "最近审计日志 (工具调用):"
+log "Recent audit log (tool calls):"
 curl -s 'http://127.0.0.1:8000/api/audit?limit=5' 2>/dev/null | \
   python3 -c "
 import sys, json
@@ -234,18 +234,18 @@ for a in logs:
     status = a.get('status','?')
     risk = a.get('risk_level','?')
     print(f'  [{status}] {tool} (risk={risk})')
-" 2>/dev/null || log "  (查询失败, 可在 Web 控制台查看)"
+" 2>/dev/null || log "  (query failed, view in web console)"
 
 # ============================================================
-# 5. 总结
+# 5. Summary
 # ============================================================
-header "5/5 Demo 完成"
+header "5/5 Demo complete"
 
-echo -e "  ${C_GREEN}故障注入: DataNode STOPPED${NC}"
-echo -e "  ${C_GREEN}Agent 自主: 检测 → 诊断 → 重启 → 验证${NC}"
-echo -e "  ${C_GREEN}结果: 集群恢复, $DN_STATUS/$EXPECTED_DN DataNode 在线${NC}"
+echo -e "  ${C_GREEN}Fault injected: DataNode STOPPED${NC}"
+echo -e "  ${C_GREEN}Agent autonomous: detect → diagnose → restart → verify${NC}"
+echo -e "  ${C_GREEN}Result: cluster recovered, $DN_STATUS/$EXPECTED_DN DataNode online${NC}"
 echo ""
-echo -e "  ${C_BOLD}Web 控制台查看完整 ReAct 时间线:${NC}"
+echo -e "  ${C_BOLD}View full ReAct timeline in web console:${NC}"
 if [ -f /workspace/tunnel_url.txt ]; then
   echo "    $(cat /workspace/tunnel_url.txt)"
 else

@@ -1,38 +1,38 @@
 #!/usr/bin/env bash
-# build-frontend.sh — 构建 React 前端 (生产模式)
+# build-frontend.sh — Build React frontend (production mode)
 #
-# 用法: bash scripts/build-frontend.sh
-# 产出: web/dist/ 目录 (FastAPI 静态托管)
+# Usage: bash scripts/build-frontend.sh
+# Output: web/dist/ directory (served by FastAPI static hosting)
 set -euo pipefail
 
 WEB_DIR="$(cd "$(dirname "$0")/.." && pwd)/web"
 cd "$WEB_DIR"
 
-echo "===== [1/3] 检查 Node.js ====="
+echo "===== [1/3] Checking Node.js ====="
 if ! command -v node >/dev/null 2>&1; then
-  echo "  Node.js 未安装, 安装中..."
+  echo "  Node.js not installed, installing..."
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash - 2>/dev/null
   apt-get install -y nodejs
 fi
 echo "  Node: $(node --version)"
 echo "  npm:  $(npm --version)"
 
-echo "===== [2/3] 安装依赖 ====="
+echo "===== [2/3] Installing dependencies ====="
 npm install --silent 2>&1 | tail -3
 
-echo "===== [3/3] 生产构建 ====="
+echo "===== [3/3] Production build ====="
 npm run build 2>&1 | tail -10
 
 echo ""
-echo "===== 验证 ====="
+echo "===== Verification ====="
 if [ -f "dist/index.html" ]; then
-  echo "  [OK] web/dist/index.html 存在"
-  echo "  产出文件:"
+  echo "  [OK] web/dist/index.html exists"
+  echo "  Output files:"
   find dist -type f | head -20 | sed 's/^/    /'
   SIZE=$(du -sh dist | awk '{print $1}')
-  echo "  总大小: $SIZE"
+  echo "  Total size: $SIZE"
 else
-  echo "  [FAIL] web/dist/index.html 不存在, 构建失败"
+  echo "  [FAIL] web/dist/index.html not found, build failed"
   exit 1
 fi
 echo "===== done ====="

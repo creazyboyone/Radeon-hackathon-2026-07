@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, memo } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import {
   Tree, Timeline, Card, Tag, Typography, Badge, Spin, Collapse,
   Empty, Descriptions, Statistic,
@@ -49,7 +49,7 @@ function fmtDateTime(ts: number): string {
   return `${mm}/${dd} ${hh}:${min}`
 }
 
-function extractCall(name: string, args: any): string {
+function extractCall(_name: string, args: any): string {
   if (!args) return ''
   const p: string[] = []
   if (args.service) p.push(args.service)
@@ -62,7 +62,7 @@ function extractCall(name: string, args: any): string {
   return p.join(' ')
 }
 
-function extractResult(name: string, r: any): string {
+function extractResult(_name: string, r: any): string {
   if (!r || typeof r !== 'object') return ''
   if (r.error) return `错误: ${r.error}`
   if (r.overall_health) return `健康=${r.overall_health}, 角色=${r.role_count ?? 0}`

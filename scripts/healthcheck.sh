@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Hadoop Cluster Health Check Script (Docker 3-node HA / 单节点直装)
+# Hadoop Cluster Health Check Script (Docker 3-node HA / single-node direct install)
 # Usage: bash scripts/healthcheck.sh
 # ============================================================
 
@@ -21,7 +21,7 @@ check_fail() { echo -e "${RED}[FAIL]${NC} $1"; FAILED=1; }
 check_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
 # ============================================================
-# 检测集群模式: Docker (docker exec) 或 直装 (supervisorctl)
+# Detect cluster mode: Docker (docker exec) or direct install (supervisorctl)
 # ============================================================
 SUPCTL="supervisorctl -c /etc/supervisor/conf.d/supervisord-hadoop01.conf"
 
@@ -34,7 +34,7 @@ elif bash -c "$SUPCTL status" >/dev/null 2>&1; then
   NODES=(localhost)
   EXPECTED_DN=1
 else
-  echo -e "${RED}[ERROR]${NC} Hadoop 集群未运行 (Docker 和直装均未检测到)"
+  echo -e "${RED}[ERROR]${NC} Hadoop cluster not running (neither Docker nor direct install detected)"
   exit 1
 fi
 
@@ -46,7 +46,7 @@ echo "============================================================"
 echo ""
 
 # ============================================================
-# 集群操作封装 (与 demo.sh 一致)
+# Cluster operation wrappers (consistent with demo.sh)
 # ============================================================
 cluster_exec() {
   local node="$1"; shift
@@ -75,13 +75,13 @@ get_hdfs_report() {
 }
 
 # ============================================================
-# 逐节点检查
+# Per-node checks
 # ============================================================
 for node in "${NODES[@]}"; do
   echo ">>> Node: $node"
   echo ""
 
-  # 容器/进程检查
+  # Container/process check
   if [ "$MODE" = "docker" ]; then
     if ! docker exec "$node" echo OK 2>/dev/null | grep -q OK; then
       check_fail "Container not running"
@@ -93,14 +93,14 @@ for node in "${NODES[@]}"; do
     check_pass "Direct install (localhost)"
   fi
 
-  # Java 进程检查 (Docker 按节点角色, 直装检查全部)
+  # Java process checks (Docker: by node role, direct: check all)
   JPS=$(get_jps "$node")
   case "$node" in
     hadoop01)
       for proc in NameNode DataNode JournalNode ResourceManager NodeManager JobHistoryServer HMaster HRegionServer QuorumPeerMain DFSZKFailoverController; do
         if echo "$JPS" | grep -q "$proc"; then check_pass "Process: $proc"; else check_fail "Process: $proc"; fi
       done
-      # Docker hadoop01 也可能有 Hive
+      # Docker hadoop01 may also have Hive
       for proc in RunJar; do
         COUNT=$(echo "$JPS" | grep -c "$proc" || true)
         if [ "$COUNT" -ge 2 ]; then check_pass "Process: Hive (MetaStore+Server2)"; else check_warn "Process: Hive (expected 2 RunJar, got $COUNT)"; fi
@@ -121,7 +121,7 @@ for node in "${NODES[@]}"; do
       done
       ;;
     localhost)
-      # 直装单节点: 所有进程都在一个节点
+      # Direct install single-node: all processes on one node
       for proc in NameNode DataNode ResourceManager NodeManager JobHistoryServer HMaster HRegionServer QuorumPeerMain; do
         if echo "$JPS" | grep -q "$proc"; then check_pass "Process: $proc"; else check_fail "Process: $proc"; fi
       done
@@ -136,7 +136,7 @@ for node in "${NODES[@]}"; do
   esac
   echo ""
 
-  # HBase Master (hadoop01/02 或 localhost)
+  # HBase Master (hadoop01/02 or localhost)
   if [ "$node" = "hadoop01" ] || [ "$node" = "hadoop02" ] || [ "$node" = "localhost" ]; then
     echo "  [HBase]"
     HBASE=$(cluster_exec "$node" curl -s http://localhost:16010/jmx 2>/dev/null)
@@ -158,7 +158,7 @@ for node in "${NODES[@]}"; do
   fi
   echo ""
 
-  # Hive (hadoop01/02 或 localhost)
+  # Hive (hadoop01/02 or localhost)
   if [ "$node" = "hadoop01" ] || [ "$node" = "hadoop02" ] || [ "$node" = "localhost" ]; then
     echo "  [Hive]"
     if cluster_exec "$node" nc -z localhost 10000 2>/dev/null; then check_pass "HiveServer2 (10000)"; else check_fail "HiveServer2 (10000)"; fi
@@ -171,7 +171,7 @@ for node in "${NODES[@]}"; do
 done
 
 # ============================================================
-# 集群级检查
+# Cluster-level checks
 # ============================================================
 echo ">>> Cluster-level checks"
 echo ""
@@ -186,7 +186,7 @@ MISSING=$(echo "$REPORT" | grep "Missing blocks:" | head -1 | awk '{print $3}')
 MISSING=${MISSING:-0}
 if [ "$MISSING" -eq 0 ]; then check_pass "Missing blocks: 0"; else check_warn "Missing blocks: $MISSING"; fi
 
-# 读写测试
+# Read/write test
 TEST="/tmp/hc_$(date +%s).txt"
 if [ "$MODE" = "docker" ]; then
   if docker exec hadoop01 bash -c "echo test | hdfs dfs -put - $TEST && hdfs dfs -cat $TEST && hdfs dfs -rm $TEST" 2>/dev/null | grep -q test; then
@@ -217,7 +217,7 @@ else
   check_fail "NodeManager: $NODES_COUNT/$EXPECTED_DN"
 fi
 
-# HA 状态检查 (仅 Docker 模式)
+# HA state check (Docker mode only)
 if [ "$MODE" = "docker" ]; then
   NN1=$(docker exec hadoop01 hdfs haadmin -getServiceState nn1 2>/dev/null || echo "unknown")
   NN2=$(docker exec hadoop01 hdfs haadmin -getServiceState nn2 2>/dev/null || echo "unknown")
@@ -230,7 +230,7 @@ else
 fi
 echo ""
 
-# JMX Exporter 端口 (直装模式额外检查)
+# JMX Exporter ports (direct install mode extra check)
 if [ "$MODE" = "direct" ]; then
   echo "  [JMX Exporter]"
   for pair in "10101:NameNode" "10102:DataNode" "10104:ResourceManager" "10105:NodeManager" "10106:HistoryServer" "10107:HMaster" "10108:RegionServer" "10109:ZooKeeper" "10110:HiveMetaStore" "10111:HiveServer2"; do
@@ -245,7 +245,7 @@ if [ "$MODE" = "direct" ]; then
   echo ""
 fi
 
-# SSH 端口 (直装模式额外检查)
+# SSH ports (direct install mode extra check)
 if [ "$MODE" = "direct" ]; then
   echo "  [SSH]"
   for p in 22 2222 2223 2224; do
@@ -258,13 +258,13 @@ if [ "$MODE" = "direct" ]; then
   echo ""
 fi
 
-# 监控组件 (两种模式都检查)
+# Monitoring components (both modes)
 echo "  [Monitoring]"
 for pair in "9090:Prometheus" "3000:Grafana" "9093:Alertmanager"; do
   port="${pair%%:*}"
   name="${pair##*:}"
   if [ "$MODE" = "docker" ]; then
-    # Docker 模式: 检查容器端口映射
+    # Docker mode: check container port mapping
     if nc -z localhost "$port" 2>/dev/null; then
       check_pass "$name ($port)"
     else
@@ -281,7 +281,7 @@ done
 echo ""
 
 # ============================================================
-# 汇总
+# Summary
 # ============================================================
 echo "============================================================"
 if [ $FAILED -eq 0 ]; then

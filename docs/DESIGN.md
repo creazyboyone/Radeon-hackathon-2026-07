@@ -884,5 +884,6 @@ Each scenario can be injected in the docker-compose environment (kill process / 
 
 | Plan | Status | Description |
 |------|--------|-------------|
-| **Single-node direct install** | In progress | Install Hadoop/ZK/HBase directly on host + supervisord + 3 SSH ports for pseudo-3-node. Demo effect unchanged |
+| **Single-node direct install** | ✅ Completed | Install Hadoop/ZK/HBase/Hive/Tez/MySQL directly on host + supervisord + 3 SSH ports. Demo effect unchanged. Script: `scripts/setup-hadoop-direct.sh` |
+| **Unified health check** | ✅ Completed | `scripts/healthcheck.sh` — dual-mode compatible (Docker 3-node HA / single-node direct install), auto-detects mode |
 | **Remote HA cluster** | Pending | Run Docker 3-node HA on standalone server; AMD Cloud agent connects via SSH tunnel |

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# setup-hadoop-direct.sh — 单节点 Hadoop 直装 (无 Docker)
+# setup-hadoop-direct.sh — Single-node Hadoop direct install (no Docker)
 #
-# 软件栈与 Docker 版本完全一致:
+# Software stack identical to Docker version:
 #   JDK 8 (Hadoop/HBase/ZK) + JDK 21 (Hive 4.2.0)
 #   Hadoop 3.3.6 + ZK 3.8.4 + HBase 2.5.15 + Hive 4.2.0 + Tez 0.10.2
 #   MySQL 8.0 (Hive Metastore) + MySQL Connector/J 8.0.30
 #   supervisord (autorestart=false) + JMX Exporter + Prometheus
 #
-# 拓扑: 单节点 (无 HA, 无 JournalNode/ZKFC)
-#   ZK 保留: HBase distributed=true 模式需要外部 ZK 协调
-#   JN 删除: 仅 HDFS HA (QJM) 才需要, 单 NN 不需要
-#   ZK admin.serverPort=9888: 避免与 YARN RM web UI 8080 冲突
-# 3 SSH 端口 (2222/2223/2224) 供 Agent 连接
-# 用法: bash scripts/setup-hadoop-direct.sh
+# Topology: single-node (no HA, no JournalNode/ZKFC)
+#   ZK retained: HBase distributed=true mode requires external ZK coordination
+#   JN removed: only needed for HDFS HA (QJM), single NN does not need it
+#   ZK admin.serverPort=9888: avoid conflict with YARN RM web UI 8080
+# 3 SSH ports (2222/2223/2224) for Agent connection
+# Usage: bash scripts/setup-hadoop-direct.sh
 set -euo pipefail
 
 PROJ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,27 +27,27 @@ SUPCTL="supervisorctl -c $SUPERVISOR_CONF/supervisord-hadoop01.conf"
 
 export DEBIAN_FRONTEND=noninteractive
 
-echo "===== 单节点 Hadoop 直装 (软件栈与 Docker 一致) ====="
+echo "===== Single-node Hadoop direct install (software stack matches Docker) ====="
 
 # ============================================================
-# 0. 清理残留 (确保脚本可重复执行)
+# 0. Cleanup residuals (ensure script is re-runnable)
 # ============================================================
-echo "[0/10] 清理残留进程和锁..."
+echo "[0/10] Cleaning up residual processes and locks..."
 
-# 停旧 supervisord
+# Stop old supervisord
 supervisorctl -c /etc/supervisor/conf.d/supervisord-hadoop01.conf shutdown 2>/dev/null || true
 pkill -f supervisord 2>/dev/null || true
 
-# 杀残留 Java 进程 (NN/DN/RM/NM/JHS/HM/RS/ZK/HMS/HS2)
+# Kill residual Java processes (NN/DN/RM/NM/JHS/HM/RS/ZK/HMS/HS2)
 pkill -9 -f 'org.apache.hadoop' 2>/dev/null || true
 pkill -9 -f 'org.apache.hbase' 2>/dev/null || true
 pkill -9 -f 'org.apache.zookeeper' 2>/dev/null || true
 pkill -9 -f 'org.apache.hive' 2>/dev/null || true
 
-# 清理 PID 文件
+# Clean up PID files
 rm -f /data/hadoop/pids/*.pid /tmp/hadoop-root-*.pid /opt/hive/conf/*.pid 2>/dev/null || true
 
-# 清理 dpkg 锁 (防止上次安装中断导致锁残留)
+# Clean up dpkg locks (prevent lock residual from previous interrupted install)
 kill -9 $(lsof /var/lib/dpkg/lock-frontend 2>/dev/null | awk 'NR>1{print $2}') 2>/dev/null || true
 kill -9 $(lsof /var/lib/dpkg/lock 2>/dev/null | awk 'NR>1{print $2}') 2>/dev/null || true
 rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock 2>/dev/null || true
@@ -56,9 +56,9 @@ dpkg --configure -a 2>/dev/null || true
 sleep 2
 
 # ============================================================
-# 1. 安装系统依赖 (与 Dockerfile 一致 + MySQL)
+# 1. Install system dependencies (match Dockerfile + MySQL)
 # ============================================================
-echo "[1/10] 安装系统依赖..."
+echo "[1/10] Installing system dependencies..."
 apt-get update -y
 apt-get install -y --no-install-recommends \
   openjdk-8-jdk-headless supervisor netcat-openbsd dnsutils \
@@ -66,16 +66,16 @@ apt-get install -y --no-install-recommends \
   openssh-client openssh-server bash mysql-server
 echo "  Java 8: $($JAVA8_HOME/bin/java -version 2>&1 | head -1)"
 
-# jps 符号链接 (agent config.py 期望 /usr/bin/jps)
+# jps symlink (agent config.py expects /usr/bin/jps)
 ln -sf "$JAVA8_HOME/bin/jps" /usr/bin/jps
 
 # ============================================================
-# 2. 下载 + 解压 tarball (与 Docker 镜像构建一致)
+# 2. Download + extract tarballs (match Docker image build)
 # ============================================================
-echo "[2/10] 下载 + 安装软件包..."
+echo "[2/10] Downloading + installing packages..."
 mkdir -p "$TARBALLS_DIR"
 
-# 安装包清单: filename|解压后目录名|目标路径|官方下载地址
+# Package list: filename|extracted dir name|target path|official download URL
 PACKAGES=(
   "openlogic-openjdk-21.0.11+10-linux-x64.tar.gz|openlogic-openjdk-21.0.11+10-linux-x64|$JAVA21_HOME|https://builds.openlogic.com/downloadJDK/openlogic-openjdk/21.0.11+10/openlogic-openjdk-21.0.11+10-linux-x64.tar.gz"
   "hadoop-3.3.6.tar.gz|hadoop-3.3.6|/opt/hadoop|https://archive.apache.org/dist/hadoop/common/hadoop-3.3.6/hadoop-3.3.6.tar.gz"
@@ -88,27 +88,27 @@ PACKAGES=(
 for pkg in "${PACKAGES[@]}"; do
   IFS='|' read -r filename src_dir target_path official_url <<< "$pkg"
 
-  # 已安装则跳过
+  # Skip if already installed
   if [ -d "$target_path" ] && [ "$(ls -A "$target_path" 2>/dev/null)" ]; then
-    echo "  $filename 已安装, 跳过"
+    echo "  $filename already installed, skipping"
     continue
   fi
 
-  # 下载 (优先远程服务器, 回退官方源)
+  # Download (prefer remote server, fallback to official source)
   if [ ! -f "$TARBALLS_DIR/$filename" ]; then
-    echo "  下载 $filename ..."
+    echo "  Downloading $filename ..."
     if curl -sf --connect-timeout 5 "$REMOTE_URL/$filename" -o "$TARBALLS_DIR/$filename" 2>/dev/null; then
-      echo "    从远程服务器下载完成"
+      echo "    Downloaded from remote server"
     else
-      echo "    远程不可用, 回退官方源 ..."
+      echo "    Remote unavailable, falling back to official source ..."
       wget -q -O "$TARBALLS_DIR/$filename" "$official_url"
     fi
   else
-    echo "  $filename 已存在, 跳过下载"
+    echo "  $filename already exists, skipping download"
   fi
 
-  # 解压 + 重命名
-  echo "    解压到 $target_path ..."
+  # Extract + rename
+  echo "    Extracting to $target_path ..."
   tar -xzf "$TARBALLS_DIR/$filename" -C "$(dirname "$target_path")/"
   mv "$(dirname "$target_path")/$src_dir" "$target_path"
 done
@@ -117,9 +117,9 @@ done
 MYSQL_JAR="mysql-connector-java-8.0.30.jar"
 if [ ! -f "/opt/hive/lib/mysql-connector-java.jar" ]; then
   if [ ! -f "$TARBALLS_DIR/$MYSQL_JAR" ]; then
-    echo "  下载 $MYSQL_JAR ..."
+    echo "  Downloading $MYSQL_JAR ..."
     if curl -sf --connect-timeout 5 "$REMOTE_URL/$MYSQL_JAR" -o "$TARBALLS_DIR/$MYSQL_JAR" 2>/dev/null; then
-      echo "    从远程服务器下载完成"
+      echo "    Downloaded from remote server"
     else
       wget -q -O "$TARBALLS_DIR/$MYSQL_JAR" "https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.30/mysql-connector-java-8.0.30.jar"
     fi
@@ -127,10 +127,10 @@ if [ ! -f "/opt/hive/lib/mysql-connector-java.jar" ]; then
   cp "$TARBALLS_DIR/$MYSQL_JAR" /opt/hive/lib/mysql-connector-java.jar
 fi
 
-# JMX exporter (从项目仓库链接, 与 Docker 挂载一致)
+# JMX exporter (symlink from project repo, matches Docker mount)
 ln -sf "$PROJ_DIR/deploy/config/jmx-exporter" /opt/jmx-exporter
 
-# hbase-wrapper.sh (强制 Java 8, 与 Docker 挂载一致)
+# hbase-wrapper.sh (force Java 8, matches Docker mount)
 cat > /usr/local/bin/hbase << 'WRAPPER'
 #!/bin/bash
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
@@ -138,19 +138,19 @@ export PATH=$JAVA_HOME/bin:$PATH
 exec /opt/hbase/bin/hbase "$@"
 WRAPPER
 chmod +x /usr/local/bin/hbase
-# 确保 wrapper 也是 unix 换行
+# Ensure wrapper uses unix line endings
 sed -i 's/\r$//' /usr/local/bin/hbase
 
-# beeline.sh 修复 (Java 21 兼容, 与 Docker 挂载一致)
+# beeline.sh fix (Java 21 compatibility, matches Docker mount)
 cp "$PROJ_DIR/deploy/image/beeline.sh" /opt/hive/bin/ext/beeline.sh
 sed -i 's/\r$//' /opt/hive/bin/ext/beeline.sh
 chmod +x /opt/hive/bin/ext/beeline.sh
 
-# Hive/Hadoop guava 冲突修复 (与 Dockerfile 一致)
+# Hive/Hadoop guava conflict fix (matches Dockerfile)
 rm -f /opt/hive/lib/guava-*.jar
 cp /opt/hadoop/share/hadoop/hdfs/lib/guava-*.jar /opt/hive/lib/
 
-# Tez jar 链接到 Hive lib (与 entrypoint.sh 一致)
+# Tez jar symlink to Hive lib (matches entrypoint.sh)
 for j in /opt/tez/*.jar; do
   ln -sf "$j" /opt/hive/lib/$(basename "$j") 2>/dev/null || true
 done
@@ -158,7 +158,7 @@ done
 echo "  Hadoop:  $(JAVA_HOME=$JAVA8_HOME /opt/hadoop/bin/hadoop version 2>&1 | head -1)"
 echo "  Java 21: $($JAVA21_HOME/bin/java -version 2>&1 | head -1)"
 
-# 环境变量 (当前 session)
+# Environment variables (current session)
 export JAVA_HOME=$JAVA8_HOME
 export HADOOP_HOME=/opt/hadoop
 export HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop
@@ -167,7 +167,7 @@ export HBASE_HOME=/opt/hbase
 export ZK_HOME=/opt/zookeeper
 export TEZ_HOME=/opt/tez
 
-# /etc/profile.d (SSH 登录后也能用)
+# /etc/profile.d (available after SSH login)
 cat > /etc/profile.d/hadoop.sh << 'EOF'
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
 export HADOOP_HOME=/opt/hadoop
@@ -180,9 +180,9 @@ export PATH=$PATH:$JAVA_HOME/bin:$HADOOP_HOME/bin:$HADOOP_HOME/sbin:$HIVE_HOME/b
 EOF
 
 # ============================================================
-# 3. 创建数据目录 (与 Dockerfile 一致)
+# 3. Create data directories (match Dockerfile)
 # ============================================================
-echo "[3/10] 创建数据目录..."
+echo "[3/10] Creating data directories..."
 mkdir -p $DATA_DIR/hadoop/hdfs/name $DATA_DIR/hadoop/hdfs/data \
          $DATA_DIR/hadoop/pids $DATA_DIR/hadoop/yarn \
          $DATA_DIR/zookeeper $LOG_DIR
@@ -190,18 +190,18 @@ mkdir -p $DATA_DIR/hadoop/hdfs/name $DATA_DIR/hadoop/hdfs/data \
 echo "1" > $DATA_DIR/zookeeper/myid
 
 # ============================================================
-# 4. 生成配置文件 (单节点无 HA, 调参与 Docker 一致)
+# 4. Generate config files (single-node no HA, params match Docker)
 # ============================================================
-echo "[4/10] 生成配置文件..."
+echo "[4/10] Generating config files..."
 
 HADOOP_CONF=$HADOOP_CONF_DIR
 
 # --- hadoop-env.sh ---
-# 注意: 不硬编码 JAVA_HOME (否则会覆盖 Hive 的 Java 21)
-# supervisord 各 program 的 environment= 已设置正确的 JAVA_HOME
+# Note: do not hardcode JAVA_HOME (would override Hive's Java 21)
+# supervisord program environment= already sets correct JAVA_HOME
 cat > $HADOOP_CONF/hadoop-env.sh << 'ENV'
-# JAVA_HOME 由调用方设置 (supervisord environment= 或 /etc/profile.d/hadoop.sh)
-# 不在此处 export JAVA_HOME, 避免覆盖 Hive 的 Java 21
+# JAVA_HOME is set by caller (supervisord environment= or /etc/profile.d/hadoop.sh)
+# Do not export JAVA_HOME here, to avoid overriding Hive's Java 21
 export HADOOP_HOME=/opt/hadoop
 export HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop
 export HADOOP_HEAPSIZE_MAX=512
@@ -219,7 +219,7 @@ cat > $HADOOP_CONF/core-site.xml << 'XML'
 </configuration>
 XML
 
-# --- hdfs-site.xml (单 NN, 无 HA, 无 JN) ---
+# --- hdfs-site.xml (single NN, no HA, no JN) ---
 cat > $HADOOP_CONF/hdfs-site.xml << 'XML'
 <?xml version="1.0" encoding="UTF-8"?>
 <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
@@ -233,7 +233,7 @@ cat > $HADOOP_CONF/hdfs-site.xml << 'XML'
 </configuration>
 XML
 
-# --- yarn-site.xml (单 RM, 无 HA, 其余调参与 Docker 一致) ---
+# --- yarn-site.xml (single RM, no HA, other params match Docker) ---
 cat > $HADOOP_CONF/yarn-site.xml << 'XML'
 <?xml version="1.0" encoding="UTF-8"?>
 <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
@@ -250,7 +250,7 @@ cat > $HADOOP_CONF/yarn-site.xml << 'XML'
 </configuration>
 XML
 
-# --- mapred-site.xml (与 Docker 一致: JDK 21 add-opens for Hive on Tez) ---
+# --- mapred-site.xml (matches Docker: JDK 21 add-opens for Hive on Tez) ---
 cat > $HADOOP_CONF/mapred-site.xml << 'XML'
 <?xml version="1.0" encoding="UTF-8"?>
 <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
@@ -273,14 +273,14 @@ XML
 # --- workers ---
 echo "localhost" > $HADOOP_CONF/workers
 
-# --- 复制 Docker 配置文件 (不需修改的) ---
-# 注意: 项目文件可能在 Windows 上编辑, 需要去除 CRLF 换行符
+# --- Copy Docker config files (no modification needed) ---
+# Note: project files may be edited on Windows, need CRLF removal
 cp "$PROJ_DIR/deploy/config/hadoop/capacity-scheduler.xml" $HADOOP_CONF/
 cp "$PROJ_DIR/deploy/config/hadoop/hadoop-metrics2.properties" $HADOOP_CONF/
 cp "$PROJ_DIR/deploy/config/hadoop/log4j.properties" $HADOOP_CONF/
 sed -i 's/\r$//' $HADOOP_CONF/capacity-scheduler.xml $HADOOP_CONF/hadoop-metrics2.properties $HADOOP_CONF/log4j.properties
 
-# --- zoo.cfg (单节点, admin.serverPort=9888 避免与 YARN RM 8080 冲突) ---
+# --- zoo.cfg (single-node, admin.serverPort=9888 to avoid conflict with YARN RM 8080) ---
 cat > /opt/zookeeper/conf/zoo.cfg << 'CFG'
 tickTime=2000
 initLimit=10
@@ -291,7 +291,7 @@ admin.serverPort=9888
 server.1=localhost:2888:3888
 CFG
 
-# --- hbase-site.xml (单节点, distributed=true 以分离 HMaster/RS) ---
+# --- hbase-site.xml (single-node, distributed=true to separate HMaster/RS) ---
 cat > /opt/hbase/conf/hbase-site.xml << 'XML'
 <?xml version="1.0" encoding="UTF-8"?>
 <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
@@ -307,11 +307,11 @@ cat > /opt/hbase/conf/hbase-site.xml << 'XML'
 </configuration>
 XML
 
-# --- hbase-env.sh (与 Docker 一致) ---
+# --- hbase-env.sh (matches Docker) ---
 cp "$PROJ_DIR/deploy/config/hbase/hbase-env.sh" /opt/hbase/conf/hbase-env.sh
 sed -i 's/\r$//' /opt/hbase/conf/hbase-env.sh
 
-# --- hive-site.xml (单节点: MySQL localhost, 单 HMS) ---
+# --- hive-site.xml (single-node: MySQL localhost, single HMS) ---
 cat > /opt/hive/conf/hive-site.xml << 'XML'
 <?xml version="1.0" encoding="UTF-8"?>
 <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
@@ -331,11 +331,11 @@ cat > /opt/hive/conf/hive-site.xml << 'XML'
 </configuration>
 XML
 
-# --- hive-env.sh (与 Docker 一致: JDK 21 + --enable-preview) ---
+# --- hive-env.sh (matches Docker: JDK 21 + --enable-preview) ---
 cp "$PROJ_DIR/deploy/config/hive/hive-env.sh" /opt/hive/conf/hive-env.sh
 sed -i 's/\r$//' /opt/hive/conf/hive-env.sh
 
-# --- tez-site.xml (单节点: tez.lib.uris 改为 localhost) ---
+# --- tez-site.xml (single-node: tez.lib.uris changed to localhost) ---
 cat > /opt/tez/conf/tez-site.xml << 'XML'
 <?xml version="1.0" encoding="UTF-8"?>
 <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
@@ -350,12 +350,12 @@ cat > /opt/tez/conf/tez-site.xml << 'XML'
 </configuration>
 XML
 
-echo "  配置文件已生成"
+echo "  Config files generated"
 
 # ============================================================
-# 5. MySQL 设置 (Hive Metastore 后端, 与 Docker MySQL 容器一致)
+# 5. MySQL setup (Hive Metastore backend, matches Docker MySQL container)
 # ============================================================
-echo "[5/10] MySQL 设置..."
+echo "[5/10] MySQL setup..."
 service mysql start 2>/dev/null || true
 sleep 3
 
@@ -365,27 +365,27 @@ CREATE USER IF NOT EXISTS 'hive'@'localhost' IDENTIFIED BY 'hivepass';
 GRANT ALL PRIVILEGES ON metastore.* TO 'hive'@'localhost';
 FLUSH PRIVILEGES;
 SQL
-echo "  MySQL: metastore DB + hive 用户已创建"
+echo "  MySQL: metastore DB + hive user created"
 
 # ============================================================
-# 6. SSH 设置 (3 端口 2222/2223/2224, 与 Docker 端口映射一致)
+# 6. SSH setup (3 ports 2222/2223/2224, matches Docker port mapping)
 # ============================================================
-echo "[6/10] SSH 设置..."
+echo "[6/10] SSH setup..."
 SSH_DIR="/root/.ssh"
 mkdir -p $SSH_DIR /run/sshd
 chmod 700 $SSH_DIR
 
-# 复制项目 SSH 密钥 (与 Docker 挂载一致)
+# Copy project SSH keys (matches Docker mount)
 if [ -f "$PROJ_DIR/deploy/config/ssh/id_rsa" ]; then
   cp "$PROJ_DIR/deploy/config/ssh/id_rsa" $SSH_DIR/id_rsa
   cp "$PROJ_DIR/deploy/config/ssh/id_rsa.pub" $SSH_DIR/id_rsa.pub
   cp "$PROJ_DIR/deploy/config/ssh/authorized_keys" $SSH_DIR/authorized_keys
-  # 修复 Windows CRLF 换行符
+  # Fix Windows CRLF line endings
   sed -i 's/\r$//' $SSH_DIR/id_rsa $SSH_DIR/id_rsa.pub $SSH_DIR/authorized_keys
   chmod 600 $SSH_DIR/id_rsa $SSH_DIR/authorized_keys
   chmod 644 $SSH_DIR/id_rsa.pub
 else
-  # 生成新密钥
+  # Generate new keys
   if [ ! -f $SSH_DIR/id_rsa ]; then
     ssh-keygen -t rsa -N "" -f $SSH_DIR/id_rsa
   fi
@@ -393,14 +393,14 @@ else
   chmod 600 $SSH_DIR/id_rsa $SSH_DIR/authorized_keys
 fi
 
-# sshd 配置
+# sshd config
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 sed -i 's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
-# 生成 host keys
+# Generate host keys
 ssh-keygen -A 2>/dev/null || true
 
-# 启动 4 个 sshd (22 + 2222/2223/2224 — agent 连 2222/2223/2224)
+# Start 4 sshd instances (22 + 2222/2223/2224 — agent connects to 2222/2223/2224)
 /usr/sbin/sshd 2>/dev/null || true
 /usr/sbin/sshd -p 2222 2>/dev/null || true
 /usr/sbin/sshd -p 2223 2>/dev/null || true
@@ -408,18 +408,18 @@ ssh-keygen -A 2>/dev/null || true
 echo "  sshd: 22, 2222, 2223, 2224"
 
 # ============================================================
-# 7. supervisord 配置 (与 Docker hadoop01 一致, autorestart=false)
+# 7. supervisord config (matches Docker hadoop01, autorestart=false)
 # ============================================================
-echo "[7/10] supervisord 配置..."
+echo "[7/10] supervisord config..."
 mkdir -p $SUPERVISOR_CONF
 
-# 清理残留 PID 文件 (与 entrypoint.sh 一致)
+# Clean up residual PID files (matches entrypoint.sh)
 rm -f /opt/hive/conf/hiveserver2.pid /opt/hive/conf/hivemetastore.pid 2>/dev/null || true
 rm -f /tmp/hadoop-root-*.pid 2>/dev/null || true
 
 cat > $SUPERVISOR_CONF/supervisord-hadoop01.conf << 'SUP'
-; 单节点 supervisord 配置 — 所有 daemon (无 HA: 无 ZKFC/JournalNode)
-; JMX Exporter 端口与 Docker 一致:
+; Single-node supervisord config — all daemons (no HA: no ZKFC/JournalNode)
+; JMX Exporter ports match Docker:
 ;   ZK=10109, NN=10101, DN=10102, RM=10104, NM=10105, JHS=10106
 ;   HMS=10110, HS2=10111, HM=10107, RS=10108
 [supervisord]
@@ -427,7 +427,7 @@ nodaemon=false
 user=root
 logfile=/logs/supervisord.log
 pidfile=/tmp/supervisord.pid
-; 全局环境变量 (Docker 用 ENV 设置, 直装需在 supervisord 里设置)
+; Global environment variables (Docker uses ENV, direct install sets in supervisord)
 environment=HADOOP_HOME="/opt/hadoop",HADOOP_CONF_DIR="/opt/hadoop/etc/hadoop",HIVE_HOME="/opt/hive",HBASE_HOME="/opt/hbase",ZK_HOME="/opt/zookeeper",TEZ_HOME="/opt/tez",HBASE_CONF_DIR="/opt/hbase/conf"
 
 [unix_http_server]
@@ -475,7 +475,7 @@ environment=HADOOP_JOB_HISTORYSERVER_OPTS="-javaagent:/opt/jmx-exporter/jmx_prom
 autostart=true ; autorestart=false ; startsecs=3  ; priority=70
 stdout_logfile=/logs/jhs.log ; stderr_logfile=/logs/jhs.err
 
-; ---- Hive (JDK 21, autostart=false 等 HDFS 就绪后手动启动) ----
+; ---- Hive (JDK 21, autostart=false, manually start after HDFS ready) ----
 [program:hivemetastore]
 command=/opt/hive/bin/hive --service metastore
 environment=HADOOP_HEAPSIZE="256",JAVA_HOME="/usr/lib/jvm/java-21-openjdk-amd64",HADOOP_OPTS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-0.20.0.jar=10110:/opt/jmx-exporter/config.yml"
@@ -488,7 +488,7 @@ environment=HADOOP_HEAPSIZE="256",JAVA_HOME="/usr/lib/jvm/java-21-openjdk-amd64"
 autostart=false ; autorestart=false ; startsecs=10 ; priority=90
 stdout_logfile=/logs/hs2.log  ; stderr_logfile=/logs/hs2.err
 
-; ---- HBase (JDK 8, 与 Docker 一致) ----
+; ---- HBase (JDK 8, matches Docker) ----
 [program:hmaster]
 command=/opt/hbase/bin/hbase master start
 environment=HBASE_MASTER_OPTS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-0.20.0.jar=10107:/opt/jmx-exporter/config.yml",HBASE_HEAPSIZE="256",JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64"
@@ -507,7 +507,7 @@ command=/opt/prometheus/prometheus --config.file=/opt/prometheus/prometheus.yml 
 autostart=true ; autorestart=true ; startsecs=3 ; priority=120
 stdout_logfile=/logs/prometheus.log ; stderr_logfile=/logs/prometheus.err
 
-; ---- Grafana (RPM 安装后路径 /usr/share/grafana) ----
+; ---- Grafana (after RPM install, path /usr/share/grafana) ----
 [program:grafana]
 command=/usr/share/grafana/bin/grafana server --config=/usr/share/grafana/conf/custom.ini --homepath=/usr/share/grafana
 autostart=true ; autorestart=true ; startsecs=3 ; priority=130
@@ -520,29 +520,29 @@ autostart=true ; autorestart=true ; startsecs=3 ; priority=140
 stdout_logfile=/logs/alertmanager.log ; stderr_logfile=/logs/alertmanager.err
 SUP
 
-# hadoop02/03 符号链接: agent 期望不同文件名, 但指向同一 supervisord
+# hadoop02/03 symlinks: agent expects different filenames, but point to same supervisord
 ln -sf supervisord-hadoop01.conf $SUPERVISOR_CONF/supervisord-hadoop02.conf
 ln -sf supervisord-hadoop01.conf $SUPERVISOR_CONF/supervisord-hadoop03.conf
 
-echo "  supervisord 配置已生成"
+echo "  supervisord config generated"
 
 # ============================================================
-# 8. 监控组件安装 (Prometheus + Grafana + Alertmanager)
+# 8. Install monitoring components (Prometheus + Grafana + Alertmanager)
 # ============================================================
-echo "[8/10] 监控组件安装 (Prometheus + Grafana + Alertmanager)..."
+echo "[8/10] Installing monitoring (Prometheus + Grafana + Alertmanager)..."
 
-# 通用下载函数: 优先远程服务器, 回退官方源
+# Generic download function: prefer remote server, fallback to official source
 download_file() {
   local filename="$1" official_url="$2"
   if [ -f "$TARBALLS_DIR/$filename" ]; then
-    echo "  $filename 已存在, 跳过"
+    echo "  $filename already exists, skipping"
     return 0
   fi
-  echo "  下载 $filename ..."
+  echo "  Downloading $filename ..."
   if curl -sf --connect-timeout 10 --retry 3 "$REMOTE_URL/$filename" -o "$TARBALLS_DIR/$filename" 2>/dev/null; then
-    echo "    从远程服务器下载完成"
+    echo "    Downloaded from remote server"
   else
-    echo "    远程不可用, 回退官方源 ..."
+    echo "    Remote unavailable, falling back to official source ..."
     curl -fkL --retry 3 -o "$TARBALLS_DIR/$filename" "$official_url"
   fi
 }
@@ -558,7 +558,7 @@ if [ ! -x "$PROM_DIR/prometheus" ]; then
 fi
 mkdir -p /data/prometheus
 
-# Prometheus 配置 (单节点: 所有 JMX 端口都在 localhost)
+# Prometheus config (single-node: all JMX ports on localhost)
 cat > $PROM_DIR/prometheus.yml << 'YML'
 global:
   scrape_interval: 15s
@@ -608,7 +608,7 @@ scrape_configs:
 YML
 echo "  Prometheus: OK"
 
-# --- Grafana (deb 包, 直接 dpkg 安装) ---
+# --- Grafana (deb package, install via dpkg) ---
 GRAFANA_FILE="grafana_13.1.1_29761037902_linux_amd64.deb"
 if [ ! -x /usr/share/grafana/bin/grafana ] && [ ! -x /opt/grafana/bin/grafana ]; then
   download_file "$GRAFANA_FILE" \
@@ -618,7 +618,7 @@ fi
 GRAFANA_DIR="$(ls -d /usr/share/grafana 2>/dev/null || echo /opt/grafana)"
 mkdir -p /data/grafana $GRAFANA_DIR/conf/provisioning/datasources $GRAFANA_DIR/conf/provisioning/dashboards
 
-# Grafana 数据源 (Prometheus)
+# Grafana datasource (Prometheus)
 cat > $GRAFANA_DIR/conf/provisioning/datasources/prometheus.yml << 'YML'
 apiVersion: 1
 datasources:
@@ -629,7 +629,7 @@ datasources:
     isDefault: true
 YML
 
-# Grafana 配置
+# Grafana config
 cat > $GRAFANA_DIR/conf/custom.ini << 'INI'
 [paths]
 data = /data/grafana
@@ -653,7 +653,7 @@ if [ ! -x "$AM_DIR/alertmanager" ]; then
 fi
 mkdir -p /data/alertmanager
 
-# Alertmanager 配置 (空配置, 不发告警)
+# Alertmanager config (empty config, no alerts sent)
 cat > $AM_DIR/alertmanager.yml << 'YML'
 global:
   resolve_timeout: 5m
@@ -669,35 +669,35 @@ YML
 echo "  Alertmanager: OK"
 
 # ============================================================
-# 9. 格式化 HDFS + 启动 + 初始化 Hive
+# 9. Format HDFS + start + initialize Hive
 # ============================================================
-echo "[9/10] 格式化 HDFS + 启动..."
+echo "[9/10] Format HDFS + start..."
 
-# 先停旧 supervisord (如果有)
+# Stop old supervisord first (if any)
 $SUPCTL shutdown 2>/dev/null || true
 pkill -f supervisord 2>/dev/null || true
 sleep 2
 
-# 格式化 HDFS (在启动 NN 之前格式化, 避免冲突)
+# Format HDFS (format before starting NN, avoid conflict)
 if [ ! -d $DATA_DIR/hadoop/hdfs/name/current ]; then
-  echo "  格式化 HDFS..."
-  # 清理旧数据目录 (确保干净格式化)
+  echo "  Formatting HDFS..."
+  # Clean old data directory (ensure clean format)
   rm -rf $DATA_DIR/hadoop/hdfs/name/* $DATA_DIR/hadoop/hdfs/data/*
   $HADOOP_HOME/bin/hdfs namenode -format -force -nonInteractive 2>&1 | tail -5
 fi
 
-# 启动 supervisord (ZK, DN, NN, RM, NM, JHS, HM, RS, Prometheus)
+# Start supervisord (ZK, DN, NN, RM, NM, JHS, HM, RS, Prometheus)
 supervisord -c $SUPERVISOR_CONF/supervisord-hadoop01.conf
 sleep 5
 
-# 等待 ZK 就绪
+# Wait for ZK to be ready
 for i in $(seq 1 15); do
   if nc -z localhost 2181 2>/dev/null; then echo "  ZK ready"; break; fi
   sleep 1
 done
 
-# 等待 HDFS 就绪
-echo "  等待 HDFS..."
+# Wait for HDFS to be ready
+  echo "  Waiting for HDFS..."
 for i in $(seq 1 30); do
   if $HADOOP_HOME/bin/hdfs dfsadmin -report >/dev/null 2>&1; then
     echo "  HDFS ready"
@@ -706,45 +706,45 @@ for i in $(seq 1 30); do
   sleep 2
 done
 
-# 上传 Tez tarball 到 HDFS (tez-site.xml 引用)
-echo "  上传 Tez tarball 到 HDFS..."
+# Upload Tez tarball to HDFS (referenced by tez-site.xml)
+echo "  Uploading Tez tarball to HDFS..."
 $HADOOP_HOME/bin/hdfs dfs -mkdir -p /tez 2>/dev/null || true
 $HADOOP_HOME/bin/hdfs dfs -put -f /opt/tez/share/tez.tar.gz /tez/ 2>/dev/null || true
 
-# 创建 Hive warehouse 目录
+# Create Hive warehouse directories
 $HADOOP_HOME/bin/hdfs dfs -mkdir -p /user/hive/warehouse /tmp 2>/dev/null || true
 $HADOOP_HOME/bin/hdfs dfs -chmod g+w /tmp 2>/dev/null || true
 
-# 初始化 Hive Metastore schema (schematool 用 JDK 21 via hive-env.sh)
-echo "  初始化 Hive Metastore schema..."
-$HIVE_HOME/bin/schematool -dbType mysql -initSchema 2>&1 | tail -5 || echo "  [提示] schema 可能已初始化"
+# Initialize Hive Metastore schema (schematool uses JDK 21 via hive-env.sh)
+echo "  Initializing Hive Metastore schema..."
+$HIVE_HOME/bin/schematool -dbType mysql -initSchema 2>&1 | tail -5 || echo "  [INFO] schema may already be initialized"
 
-# 启动 Hive 服务
+# Start Hive services
 $SUPCTL start hivemetastore 2>/dev/null || true
 $SUPCTL start hiveserver2 2>/dev/null || true
 
 echo ""
-echo "=== 服务状态 ==="
+echo "=== Service status ==="
 sleep 5
-$SUPCTL status 2>/dev/null || echo "  supervisord 未运行"
+  $SUPCTL status 2>/dev/null || echo "  supervisord not running"
 
 # ============================================================
-# 10. 验证
+# 10. Verify
 # ============================================================
-echo "[10/10] 验证..."
+echo "[10/10] Verify..."
 sleep 10
 
 echo "=== HDFS ==="
-$HADOOP_HOME/bin/hdfs dfsadmin -report 2>/dev/null | head -10 || echo "  HDFS 尚未就绪"
+$HADOOP_HOME/bin/hdfs dfsadmin -report 2>/dev/null | head -10 || echo "  HDFS not ready yet"
 
 echo ""
-echo "=== SSH 端口 ==="
+echo "=== SSH ports ==="
 for p in 22 2222 2223 2224; do
   nc -z localhost $p 2>/dev/null && echo "  port $p: OK" || echo "  port $p: FAIL"
 done
 
 echo ""
-echo "=== JMX Exporter 端口 ==="
+echo "=== JMX Exporter ports ==="
 for pair in "10101:NameNode" "10102:DataNode" "10104:ResourceManager" "10105:NodeManager" "10106:HistoryServer" "10107:HMaster" "10108:RegionServer" "10109:ZooKeeper" "10110:HiveMetaStore" "10111:HiveServer2"; do
   port="${pair%%:*}"
   name="${pair##*:}"
@@ -752,25 +752,25 @@ for pair in "10101:NameNode" "10102:DataNode" "10104:ResourceManager" "10105:Nod
 done
 
 # ============================================================
-# 运行统一健康检查脚本 (Docker / 直装双模式兼容)
+# Run unified health check script (Docker / direct install dual-mode compatible)
 # ============================================================
 echo ""
-echo "=== 统一健康检查 (healthcheck.sh) ==="
+echo "=== Unified health check (healthcheck.sh) ==="
 if [ -f "$PROJ_DIR/scripts/healthcheck.sh" ]; then
   sed -i 's/\r$//' "$PROJ_DIR/scripts/healthcheck.sh"
   chmod +x "$PROJ_DIR/scripts/healthcheck.sh"
   bash "$PROJ_DIR/scripts/healthcheck.sh" || true
 else
-  echo "  [提示] healthcheck.sh 不存在, 跳过统一健康检查"
+  echo "  [INFO] healthcheck.sh not found, skipping unified health check"
 fi
 
 echo ""
-echo "===== 完成 ====="
+echo "===== Complete ====="
 echo "  NameNode UI:    http://localhost:9870"
 echo "  YARN UI:        http://localhost:8088"
 echo "  HBase UI:       http://localhost:16010"
 echo "  Prometheus:     http://localhost:9090"
 echo "  Grafana:        http://localhost:3000 (admin/admin)"
 echo "  Alertmanager:   http://localhost:9093"
-echo "  SSH:            localhost:2222 (hadoop01/02/03 共用)"
-echo "  supervisorctl status  查看服务状态"
+echo "  SSH:            localhost:2222 (hadoop01/02/03 shared)"
+echo "  supervisorctl status  to view service status"
