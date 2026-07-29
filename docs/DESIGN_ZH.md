@@ -847,4 +847,43 @@ runbooks(
 - 稳定性 > 微小提速（不开超频）
 - thinking 模型：`reasoning_content` 独立字段，agent 直接读取
 - 可复现性：docker-compose + 录屏 + README（评委进不了局域网）
+
+---
+
+## 附录 B：AMD Cloud 容器能力探索记录
+
+> 2026-07-29 在 AMD Cloud JupyterLab 容器（Ubuntu 24.04 noble）上实测，确认容器**不支持 Docker-in-Docker**，以下为探索过程和结论。
+
+### 环境
+
+| 项 | 值 |
+|---|---|
+| 容器 | Ubuntu 24.04 (noble), JupyterLab pod |
+| 内核 | 共享宿主内核, `unprivileged_userns_clone=1` |
+| CapEff | `0xa80425fb`（有 `CAP_SYS_CHROOT`, `CAP_MKNOD`，**无 `CAP_SYS_ADMIN`**） |
+
+### 尝试的方案及结果
+
+| 方案 | 结果 | 失败原因 |
+|---|---|---|
+| **Docker-in-Docker** (dockerd --storage-driver=vfs --iptables=false) | ❌ daemon 启动成功, 但 `docker load` 报 `unshare: operation not permitted` | 缺 `CAP_SYS_ADMIN`, `unshare(CLONE_NEWNS)` 被禁 |
+| **Podman rootful** (overlay) | ❌ `mount overlay: permission denied` | 同上, overlay 需要真实 mount |
+| **Podman rootful** (vfs) | ❌ `remount /, flags: 0x44000: permission denied` | 应用 layer 时需 `MS_PRIVATE\|MS_REC` remount, 需 `CAP_SYS_ADMIN` |
+| **Podman rootless** (非 root 用户) | ❌ `newuidmap: write to uid_map failed: Operation not permitted` | seccomp 策略拦截 `/proc/PID/uid_map` 写入, 即使 `unprivileged_userns_clone=1` |
+| **unshare -Ur** (root 内核内置映射) | 未测试通过 | `unshare(CLONE_NEWUSER)` 可能也被 seccomp 拦截 |
+| **chroot** (有 `CAP_SYS_CHROOT`) | ⚠️ supervisord 可跑, Java 报 `libjli.so` 缺失 (ldconfig 不解), 且无 `/proc`/`/sys` | 库路径 + 缺 procfs, 3 节点无独立网络命名空间 |
+
+### 结论
+
+- AMD Cloud JupyterLab 容器**不允许创建任何命名空间**（mount/user/net 全被 seccomp 拦截）
+- Docker、Podman、容器化方案全部不可行
+- `export-cluster.sh` 导出的镜像+数据卷备份**在 AMD Cloud 上无法使用**（无法 `docker load`）
+- 备份文件仅适用于**本地 Docker 环境**或远程独立服务器
+
+### 替代方案
+
+| 方案 | 状态 | 说明 |
+|---|---|---|
+| **单节点直装** | 进行中 | host 上直接装 Hadoop/ZK/HBase + supervisord + 3 SSH 端口伪 3 节点。Demo 效果不变 |
+| **远程 HA 集群** | 待定 | 在独立服务器上跑 Docker 3 节点 HA, AMD Cloud agent 通过 SSH 隧道连接 |
 - 主环境持久存储：`/workspace` 20G 持久卷（放模型），overlay 根非持久

@@ -136,7 +136,31 @@
 ### 可观测性
 
 - [ ] **时序指标趋势图** — 新增 SQLite 时序表定期记录 `get_metrics` 的 CPU/MEM/Disk 数值，Web 前端画 24h 趋势折线图。当前只能看瞬时快照，趋势图能发现"磁盘每天涨 5%"这类渐变问题
-- [ ] **一键 Demo 脚本** — `scripts/demo.sh`：一键启动集群 → 等待健康 → 注入故障（kill DataNode）→ 触发 fix → 展示 Web 控制台完整闭环。评委运行一条命令即可看到完整演示效果，不用手动多步操作
+- [x] **一键 Demo 脚本** — `scripts/demo.sh`：一键启动集群 → 等待健康 → 注入故障（kill DataNode）→ 触发 fix → 展示 Web 控制台完整闭环。评委运行一条命令即可看到完整演示效果，不用手动多步操作
+
+## AMD Cloud 部署适配
+
+### 已完成
+
+- [x] **FastAPI 单端口托管前端** — `web/app.py` 加 `StaticFiles` + SPA fallback，FastAPI :8000 同时服务 API/WS/React 静态文件
+- [x] **llama.cpp ROCm 编译脚本** — `scripts/build-llama.sh`，HIPBLAS + 符号链接统一路径
+- [x] **Docker-in-Docker 安装脚本** — `scripts/setup-docker.sh`（实际 AMD Cloud 不支持 Docker-in-Docker，缺 CAP_SYS_ADMIN）
+- [x] **tarball 下载自动化** — `scripts/download-tarballs.sh`
+- [x] **前端生产构建** — `scripts/build-frontend.sh` + Vite build 配置
+- [x] **.env 环境变量模板** — `.env.example`
+- [x] **一键部署主脚本** — `scripts/setup-cloud.sh`，9 步串起全流程，幂等可重复
+- [x] **集群导出 + 远程托管** — `scripts/export-cluster.sh` 导出镜像+数据卷，托管在 `http://8.148.228.51/repo/aiops-cluster-backup/`
+- [x] **rc-tunnel 公网暴露** — `setup-cloud.sh` Step 8 自动暴露 :8000
+
+### 进行中
+
+- [ ] **单节点 Hadoop 直装** — `scripts/setup-hadoop-direct.sh`：AMD Cloud 不支持 Docker-in-Docker（缺 CAP_SYS_ADMIN + seccomp 拦截 user namespace），改为直接在 host 上安装单节点 Hadoop + ZK + HBase + supervisord + 3 SSH 端口伪 3 节点。Demo 效果不变（注入故障 → Agent 检测 → 修复）
+- [ ] **setup-cloud.sh 适配单节点** — 当 Docker 不可用时自动 fallback 到单节点直装路径
+
+### 待定（Path 2: 远程 Hadoop HA）
+
+- [ ] **远程 Hadoop HA 集群** — 在 8.148.228.51 上搭建 Docker 3 节点 Hadoop HA 集群，AMD Cloud 通过 SSH 隧道/反向代理访问。Agent 在 AMD Cloud 上跑，SSH 连远程集群节点。需要：SSH 反向隧道或 WireGuard VPN 打通网络、agent config 指向远程 IP、Prometheus 远程采集
+- [ ] **评委复现文档** — README 写两条路径：A) 单节点直装（简快）、B) 远程 HA 集群（完整 3 节点效果）
 
 ## 待敲定参数
 

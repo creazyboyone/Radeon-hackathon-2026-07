@@ -847,3 +847,42 @@ Each scenario can be injected in the docker-compose environment (kill process / 
 - Thinking model: `reasoning_content` as separate field; agent reads directly
 - Reproducibility: docker-compose + screen recording + README (judges cannot access LAN)
 - Primary env persistent storage: `/workspace` 20G persistent volume (holds model); overlay root is non-persistent
+
+---
+
+## Appendix B: AMD Cloud Container Capability Exploration
+
+> Tested on AMD Cloud JupyterLab container (Ubuntu 24.04 noble) on 2026-07-29. Confirmed that the container **does not support Docker-in-Docker**. Exploration process and findings below.
+
+### Environment
+
+| Item | Value |
+|------|-------|
+| Container | Ubuntu 24.04 (noble), JupyterLab pod |
+| Kernel | Shared host kernel, `unprivileged_userns_clone=1` |
+| CapEff | `0xa80425fb` (has `CAP_SYS_CHROOT`, `CAP_MKNOD`, **no `CAP_SYS_ADMIN`**) |
+
+### Approaches Tried and Results
+
+| Approach | Result | Failure Reason |
+|----------|--------|-----------------|
+| **Docker-in-Docker** (dockerd --storage-driver=vfs --iptables=false) | ❌ daemon starts, but `docker load` fails: `unshare: operation not permitted` | Missing `CAP_SYS_ADMIN`; `unshare(CLONE_NEWNS)` blocked |
+| **Podman rootful** (overlay) | ❌ `mount overlay: permission denied` | Same as above; overlay requires real mount |
+| **Podman rootful** (vfs) | ❌ `remount /, flags: 0x44000: permission denied` | Layer application requires `MS_PRIVATE\|MS_REC` remount, needs `CAP_SYS_ADMIN` |
+| **Podman rootless** (non-root user) | ❌ `newuidmap: write to uid_map failed: Operation not permitted` | seccomp policy blocks `/proc/PID/uid_map` writes, even with `unprivileged_userns_clone=1` |
+| **unshare -Ur** (root kernel built-in mapping) | Not confirmed working | `unshare(CLONE_NEWUSER)` likely also blocked by seccomp |
+| **chroot** (has `CAP_SYS_CHROOT`) | ⚠️ supervisord runs, Java fails (`libjli.so` missing, ldconfig doesn't fix), no `/proc`/`/sys` | Library path issues + missing procfs; no separate network namespaces for 3 nodes |
+
+### Conclusions
+
+- AMD Cloud JupyterLab container **does not allow creating any namespaces** (mount/user/net all blocked by seccomp)
+- Docker, Podman, and all containerization approaches are infeasible
+- `export-cluster.sh` backup (image + data volumes) **cannot be used on AMD Cloud** (`docker load` fails)
+- Backup files are only usable on **local Docker environments** or remote standalone servers
+
+### Fallback Plans
+
+| Plan | Status | Description |
+|------|--------|-------------|
+| **Single-node direct install** | In progress | Install Hadoop/ZK/HBase directly on host + supervisord + 3 SSH ports for pseudo-3-node. Demo effect unchanged |
+| **Remote HA cluster** | Pending | Run Docker 3-node HA on standalone server; AMD Cloud agent connects via SSH tunnel |
