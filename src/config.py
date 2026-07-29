@@ -60,29 +60,37 @@ SSH_KEY_PATH = os.getenv("SSH_KEY_PATH", "")
 # ============================================================
 # 集群节点 (node_key -> IP + hostname + ssh_port)
 #
-# CDH:  host=真实IP, ssh_port=22
-# Docker: host=localhost, ssh_port=2222/2223/2224 (端口映射)
+# 动态构建: 仅包含设置了 NODE0X_HOST 环境变量的节点
+#   单节点直装: 只设 NODE01_HOST → 只有 hadoop01 (ssh_port=22)
+#   Docker 3节点: 设 NODE01/02/03_HOST → 三个节点 (ssh_port=2222/2223/2224)
+#   CDH: 设 NODE01/02/03_HOST 为真实IP → 三个节点 (ssh_port=22)
 # ============================================================
-CLUSTER_NODES = {
-    "hadoop01": {
-        "host": os.getenv("NODE01_HOST", "localhost"),
-        "hostname": os.getenv("NODE01_NAME", "hadoop01"),
-        "ssh_port": int(os.getenv("NODE01_SSH_PORT", "2222")),
+CLUSTER_NODES = {}
+
+_NODE_DEFS = [
+    ("hadoop01", "NODE01_HOST", "NODE01_NAME", "NODE01_SSH_PORT", "2222"),
+    ("hadoop02", "NODE02_HOST", "NODE02_NAME", "NODE02_SSH_PORT", "2223"),
+    ("hadoop03", "NODE03_HOST", "NODE03_NAME", "NODE03_SSH_PORT", "2224"),
+]
+
+for _node_key, _host_env, _name_env, _port_env, _default_port in _NODE_DEFS:
+    _host = os.getenv(_host_env)
+    if _host:
+        CLUSTER_NODES[_node_key] = {
+            "host": _host,
+            "hostname": os.getenv(_name_env, _node_key),
+            "ssh_port": int(os.getenv(_port_env, _default_port)),
+            "supervisor_conf": f"/etc/supervisor/conf.d/supervisord-{_node_key}.conf",
+        }
+
+# Fallback: if no NODE env vars set, default to single-node localhost:22
+if not CLUSTER_NODES:
+    CLUSTER_NODES["hadoop01"] = {
+        "host": "localhost",
+        "hostname": "hadoop01",
+        "ssh_port": 22,
         "supervisor_conf": "/etc/supervisor/conf.d/supervisord-hadoop01.conf",
-    },
-    "hadoop02": {
-        "host": os.getenv("NODE02_HOST", "localhost"),
-        "hostname": os.getenv("NODE02_NAME", "hadoop02"),
-        "ssh_port": int(os.getenv("NODE02_SSH_PORT", "2223")),
-        "supervisor_conf": "/etc/supervisor/conf.d/supervisord-hadoop02.conf",
-    },
-    "hadoop03": {
-        "host": os.getenv("NODE03_HOST", "localhost"),
-        "hostname": os.getenv("NODE03_NAME", "hadoop03"),
-        "ssh_port": int(os.getenv("NODE03_SSH_PORT", "2224")),
-        "supervisor_conf": "/etc/supervisor/conf.d/supervisord-hadoop03.conf",
-    },
-}
+    }
 
 # ---- Cloudera Manager API (CDH 后端用, apache 后端可忽略) ----
 CM_HOST = os.getenv("CM_HOST", "10.0.0.3")
@@ -309,7 +317,14 @@ SERVICE_MAP = {
     },
 }
 
+# ---- 运行时过滤: SERVICE_MAP nodes 仅保留实际存在的节点 ----
+# 单节点模式下 hadoop02/hadoop03 不存在, 相关服务自动缩减为单实例
+_active_nodes = set(CLUSTER_NODES.keys())
+for _svc in SERVICE_MAP.values():
+    _svc["nodes"] = [n for n in _svc["nodes"] if n in _active_nodes]
+
 # 默认巡检服务列表 (agent /auto 模式检查这些)
+# 单节点模式无 JournalNode (非 HA), 自动跳过
 if CLUSTER_BACKEND == "cdh":
     INSPECT_SERVICES = [
         "NameNode", "DataNode", "ResourceManager", "NodeManager",
@@ -320,5 +335,7 @@ else:
     INSPECT_SERVICES = [
         "NameNode", "DataNode", "ResourceManager", "NodeManager",
         "HiveMetaStore", "HBaseMaster", "ZooKeeper",
-        "JournalNode",
     ]
+    # JournalNode 仅在 HA 多节点模式下巡检
+    if len(_active_nodes) >= 3:
+        INSPECT_SERVICES.append("JournalNode")

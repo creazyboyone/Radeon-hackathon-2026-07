@@ -131,9 +131,11 @@ fi
 
 # Generate .env
 SSH_KEY_PATH="$PROJ_DIR/deploy/config/ssh/id_rsa"
+# SSH requires 0600 on private keys; Git checkout leaves 0644
+chmod 600 "$SSH_KEY_PATH" 2>/dev/null || true
 
 if [ "$CLUSTER_MODE" = "1" ]; then
-  # Local single-node: all SSH connects to localhost
+  # Local single-node: only 1 SSH to localhost:22 (no Docker port mapping)
   cat > "$PROJ_DIR/.env" << EOF
 export LLM_BASE_URL="$LLM_BASE_URL"
 export LLM_API_KEY="$LLAMA_API_KEY"
@@ -145,11 +147,7 @@ export CLUSTER_BACKEND="$CLUSTER_BACKEND"
 export SSH_USER=root
 export SSH_KEY_PATH="$SSH_KEY_PATH"
 export NODE01_HOST=localhost
-export NODE01_SSH_PORT=2222
-export NODE02_HOST=localhost
-export NODE02_SSH_PORT=2223
-export NODE03_HOST=localhost
-export NODE03_SSH_PORT=2224
+export NODE01_SSH_PORT=22
 export PROMETHEUS_URL=http://localhost:9090
 export ALERTMANAGER_URL=http://localhost:9093
 export GRAFANA_URL=http://localhost:3000

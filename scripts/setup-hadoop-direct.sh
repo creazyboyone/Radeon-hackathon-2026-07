@@ -377,6 +377,8 @@ chmod 700 $SSH_DIR
 
 # Copy project SSH keys (matches Docker mount)
 if [ -f "$PROJ_DIR/deploy/config/ssh/id_rsa" ]; then
+  # Fix source key permissions first (Git checkout leaves 0644, SSH needs 0600)
+  chmod 600 "$PROJ_DIR/deploy/config/ssh/id_rsa"
   cp "$PROJ_DIR/deploy/config/ssh/id_rsa" $SSH_DIR/id_rsa
   cp "$PROJ_DIR/deploy/config/ssh/id_rsa.pub" $SSH_DIR/id_rsa.pub
   cp "$PROJ_DIR/deploy/config/ssh/authorized_keys" $SSH_DIR/authorized_keys
@@ -400,12 +402,9 @@ sed -i 's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_co
 # Generate host keys
 ssh-keygen -A 2>/dev/null || true
 
-# Start 4 sshd instances (22 + 2222/2223/2224 — agent connects to 2222/2223/2224)
+# Single-node: only need 1 sshd on port 22 (no Docker port mapping)
 /usr/sbin/sshd 2>/dev/null || true
-/usr/sbin/sshd -p 2222 2>/dev/null || true
-/usr/sbin/sshd -p 2223 2>/dev/null || true
-/usr/sbin/sshd -p 2224 2>/dev/null || true
-echo "  sshd: 22, 2222, 2223, 2224"
+echo "  sshd: 22"
 
 # ============================================================
 # 7. supervisord config (matches Docker hadoop01, autorestart=false)
@@ -520,10 +519,7 @@ autostart=true ; autorestart=true ; startsecs=3 ; priority=140
 stdout_logfile=/logs/alertmanager.log ; stderr_logfile=/logs/alertmanager.err
 SUP
 
-# hadoop02/03 symlinks: agent expects different filenames, but point to same supervisord
-ln -sf supervisord-hadoop01.conf $SUPERVISOR_CONF/supervisord-hadoop02.conf
-ln -sf supervisord-hadoop01.conf $SUPERVISOR_CONF/supervisord-hadoop03.conf
-
+# Single-node: no hadoop02/03 symlinks needed (CLUSTER_NODES only has hadoop01)
 echo "  supervisord config generated"
 
 # ============================================================

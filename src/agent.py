@@ -11,7 +11,7 @@ from src.tools import (
 )
 from src.config import (
     MAX_REACT_ITERATIONS, MAX_TOKENS, TEMPERATURE,
-    AUTONOMY, PROMPT_LANGUAGE
+    AUTONOMY, PROMPT_LANGUAGE, CLUSTER_NODES
 )
 from src.guardrails import Guardrail
 
@@ -254,7 +254,35 @@ def get_prompt(mode: str, lang: Optional[str] = None) -> str:
     if mode not in PROMPTS[lang]:
         mode = "fix"
     
-    return PROMPTS[lang][mode]
+    prompt = PROMPTS[lang][mode]
+    
+    # Dynamically replace hardcoded cluster node line with actual topology
+    node_count = len(CLUSTER_NODES)
+    node_names = ", ".join(CLUSTER_NODES.keys())
+    is_ha = node_count >= 3
+
+    if lang == "zh":
+        old_line = "- 3节点 Apache Hadoop 集群 (docker-compose): hadoop01, hadoop02, hadoop03"
+        if is_ha:
+            new_line = f"- {node_count}节点 Apache Hadoop 集群: {node_names}"
+        else:
+            new_line = f"- 单节点 Apache Hadoop 集群: {node_names}"
+    else:
+        old_line = "- 3-node Apache Hadoop cluster (docker-compose): hadoop01, hadoop02, hadoop03"
+        if is_ha:
+            new_line = f"- {node_count}-node Apache Hadoop cluster: {node_names}"
+        else:
+            new_line = f"- Single-node Apache Hadoop cluster: {node_names}"
+    
+    prompt = prompt.replace(old_line, new_line)
+    
+    # Remove JournalNode mentions in single-node mode
+    if not is_ha:
+        prompt = prompt.replace("/JournalNode", "")
+        prompt = prompt.replace("NameNode HA", "NameNode")
+        prompt = prompt.replace("ResourceManager HA", "ResourceManager")
+    
+    return prompt
 
 
 # =============================================================================
