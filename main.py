@@ -25,7 +25,9 @@ def run_web(store):
     import uvicorn
     from src.web.app import create_app
     app = create_app(store)
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info",
+    # 绑定 127.0.0.1: rc-tunnel 要求 + 安全 (不裸暴露)
+    # 生产模式: 前端静态文件由 FastAPI 同端口托管
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info",
                 ws="wsproto")
 
 

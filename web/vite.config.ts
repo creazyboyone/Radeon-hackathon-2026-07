@@ -13,4 +13,11 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    // 生产构建输出到 dist/, FastAPI 挂载为静态文件
+    outDir: 'dist',
+    assetsDir: 'assets',
+    sourcemap: false,
+    chunkSizeWarningLimit: 1500,
+  },
 })

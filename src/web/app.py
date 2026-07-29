@@ -1,12 +1,14 @@
-"""FastAPI 后端 — REST API + WebSocket 事件推送"""
+"""FastAPI 后端 — REST API + WebSocket 事件推送 + 前端静态托管"""
 import asyncio
 import json
+import os
 import queue
 import time
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .event_bus import bus
 
@@ -17,6 +19,7 @@ def create_app(store) -> FastAPI:
 
     app = FastAPI(title="AIOps Agent Console")
 
+    # 开发模式 CORS (Vite dev server :5173); 生产模式前端同源不需要 CORS
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -324,6 +327,33 @@ def create_app(store) -> FastAPI:
             "created_at": row[7], "processed_at": row[8],
         }
 
+    # ---- 健康检查 (Docker healthcheck / 负载均衡探活) ----
+
+    @app.get("/health")
+    def health_check():
+        """返回服务状态: LLM 可达性 + DB 可用性"""
+        from src.config import LLM_BASE_URL, LLM_API_KEY
+        llm_ok = False
+        try:
+            import requests
+            resp = requests.get(
+                f"{LLM_BASE_URL.rstrip('/')}/models",
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+                timeout=5,
+            )
+            llm_ok = resp.status_code == 200
+        except Exception:
+            pass
+        db_ok = False
+        try:
+            with store.lock:
+                store.conn.execute("SELECT 1").fetchone()
+            db_ok = True
+        except Exception:
+            pass
+        status = "healthy" if (llm_ok and db_ok) else "degraded"
+        return {"status": status, "llm_reachable": llm_ok, "db_ok": db_ok}
+
     # ---- WebSocket ----
 
     @app.websocket("/ws")
@@ -347,5 +377,32 @@ def create_app(store) -> FastAPI:
             pass
         finally:
             bus.unsubscribe(q)
+
+    # ---- 前端静态文件托管 (生产模式) ----
+    # Vite build 产出 web/dist/, FastAPI 挂载为静态资源 + SPA fallback
+    _web_dist = os.path.join(os.path.dirname(__file__), "..", "..", "web", "dist")
+    if os.path.isdir(_web_dist):
+        # /assets/* 静态资源 (JS/CSS/图片, 带 hash 文件名, 可强缓存)
+        _assets = os.path.join(_web_dist, "assets")
+        if os.path.isdir(_assets):
+            app.mount("/assets", StaticFiles(directory=_assets), name="assets")
+
+        # 其他根级静态文件 (favicon.svg 等)
+        for f in os.listdir(_web_dist):
+            if f == "assets" or f == "index.html":
+                continue
+            fp = os.path.join(_web_dist, f)
+            if os.path.isfile(fp):
+                app.mount(f"/{f}", StaticFiles(directory=_web_dist), name=f"static-{f}")
+
+        # SPA fallback: 所有未匹配的路由返回 index.html (React Router 前端处理)
+        _index_html = os.path.join(_web_dist, "index.html")
+
+        @app.get("/{full_path:path}")
+        async def spa_fallback(full_path: str):
+            # 不拦截 /api /ws /health /assets 开头的路径
+            if full_path.startswith(("api/", "ws", "health", "assets/")):
+                return JSONResponse(status_code=404, content={"detail": "not found"})
+            return FileResponse(_index_html)
 
     return app
