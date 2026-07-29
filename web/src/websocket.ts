@@ -20,7 +20,8 @@ class WebSocketManager {
 
     // 复位 closed 标记, 否则 disconnect 过一次后将永远无法自动重连
     this.closed = false
-    this.ws = new WebSocket(`ws://${location.host}/ws`)
+    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    this.ws = new WebSocket(`${wsProtocol}//${location.host}/ws`)
 
     this.ws.onopen = () => {
       console.log('[WebSocket] Connected')
