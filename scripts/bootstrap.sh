@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# bootstrap.sh - 重启后一键恢复：SSH + 模型 + llama-server + rc-tunnel 公网暴露
-# 存放: /workspace/bootstrap.sh  用法: bash /workspace/bootstrap.sh
+# bootstrap.sh — llama-server 启动 + 模型下载 (可选 rc-tunnel 暴露 LLM 端口)
+#
+# 用法:
+#   bash scripts/bootstrap.sh                  # 仅启动 llama-server (本地访问)
+#   EXPOSE_LLM_PORT=1 bash scripts/bootstrap.sh  # 同时 rc-tunnel 暴露 8080 端口
+#
+# 存放: /workspace/bootstrap.sh 或 scripts/bootstrap.sh
 set -uo pipefail
 LOG=/workspace/bootstrap.log
 exec > >(tee -a "$LOG") 2>&1
@@ -85,8 +90,14 @@ else
   fi
 fi
 
-# 5. rc-tunnel 公网暴露
-echo "[5/5] rc-tunnel 公网暴露..."
+# 5. rc-tunnel 公网暴露 (可选, 默认不暴露)
+# setup-cloud.sh 会单独暴露 8000 (Web 控制台), 不需要再暴露 8080 (LLM)
+# 仅当 EXPOSE_LLM_PORT=1 时才暴露 LLM 端口 (旧架构: 远程推理模式)
+EXPOSE_LLM_PORT="${EXPOSE_LLM_PORT:-0}"
+if [ "$EXPOSE_LLM_PORT" != "1" ]; then
+  echo "[5/5] rc-tunnel: 跳过 (EXPOSE_LLM_PORT 未设置, setup-cloud.sh 会暴露 8000 端口)"
+else
+echo "[5/5] rc-tunnel 公网暴露 (LLM :8080)..."
 RC_TUNNEL="$HOME/.local/bin/rc-tunnel"
 
 # 安装 rc-tunnel (幂等)
@@ -145,6 +156,7 @@ else
   echo "  [警告] rc-tunnel 未安装, 跳过公网暴露"
   echo "  可手动安装: /var/run/secrets/frp-self-service/install"
 fi
+fi  # end EXPOSE_LLM_PORT check
 
 echo "===== 状态 ====="
 echo "  sshd:$(pgrep -x sshd >/dev/null 2>&1 && echo ON || echo OFF) llama:$(pgrep -f llama-server >/dev/null 2>&1 && echo ON || echo OFF) tunnel:$([ -f "$TUNNEL_URL_FILE" ] && echo "$(cat "$TUNNEL_URL_FILE")" || echo OFF)"
