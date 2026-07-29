@@ -1,206 +1,206 @@
-# AIOps-Agent 设计文档
+# AIOps-Agent Design Document
 
-> 本文档为开发权威参考，后续开发以本文为准。
-> 赛事：AMD AI DevMaster Hackathon - 赛道2 Agentic AI
-> 最后更新：2026-07-20
-
----
-
-## 0. 目录
-
-1. [项目定位与赛题契合](#1-项目定位与赛题契合)
-2. [场景定义](#2-场景定义)
-3. [评分拆解与策略](#3-评分拆解与策略)
-4. [运行环境与推理优化](#4-运行环境与推理优化)
-5. [核心设计：24h 无人值守 + 分级自治](#5-核心设计24h-无人值守--分级自治)
-6. [系统架构总览](#6-系统架构总览)
-7. [编排层：Orchestrator + master + 子session](#7-编排层orchestrator--master--子session)
-8. [上下文策略：一次性 context + DB 状态传递](#8-上下文策略一次性-context--db-状态传递)
-9. [工具层：MCP server](#9-工具层mcp-server)
-10. [监控平台对接](#10-监控平台对接)
-11. [Web 控制台](#11-web-控制台)
-12. [Session 记录与回看](#12-session-记录与回看)
-13. [知识库 RAG](#13-知识库-rag)
-14. [技术选型](#14-技术选型)
-15. [核心数据流](#15-核心数据流)
-16. [数据模型（SQLite 表结构）](#16-数据模型sqlite-表结构)
-17. [故障剧本（演示用）](#17-故障剧本演示用)
-18. [开发顺序与里程碑](#18-开发顺序与里程碑)
-19. [开放问题（设计遗留决策）](#19-开放问题设计遗留决策)
-20. [待实现的特性](#20-待实现的特性)
+> **中文版：[DESIGN_ZH.md](./DESIGN_ZH.md)**
+>
+> This document is the authoritative development reference. All subsequent development follows this document.
+> Event: AMD AI DevMaster Hackathon — Track 2: Agentic AI
+> Last updated: 2026-07-29
 
 ---
 
-## 1. 项目定位与赛题契合
+## 0. Table of Contents
 
-### 1.1 赛道要求
+1. [Project Positioning & Track Alignment](#1-project-positioning--track-alignment)
+2. [Scenario Definition](#2-scenario-definition)
+3. [Scoring Breakdown & Strategy](#3-scoring-breakdown--strategy)
+4. [Runtime Environment & Inference Optimization](#4-runtime-environment--inference-optimization)
+5. [Core Design: 24h Unattended Operation + Tiered Autonomy](#5-core-design-24h-unattended-operation--tiered-autonomy)
+6. [System Architecture Overview](#6-system-architecture-overview)
+7. [Orchestration Layer: Orchestrator + Master + Sub-sessions](#7-orchestration-layer-orchestrator--master--sub-sessions)
+8. [Context Strategy: One-shot Context + DB State Passing](#8-context-strategy-one-shot-context--db-state-passing)
+9. [Tool Layer: MCP Server](#9-tool-layer-mcp-server)
+10. [Monitoring Platform Integration](#10-monitoring-platform-integration)
+11. [Web Console](#11-web-console)
+12. [Session Recording & Replay](#12-session-recording--replay)
+13. [Knowledge Base RAG](#13-knowledge-base-rag)
+14. [Technology Selection](#14-technology-selection)
+15. [Core Data Flows](#15-core-data-flows)
+16. [Data Model (SQLite Schema)](#16-data-model-sqlite-schema)
+17. [Fault Scenarios (for Demo)](#17-fault-scenarios-for-demo)
+18. [Development Order & Milestones](#18-development-order--milestones)
+19. [Open Questions (Design Decisions)](#19-open-questions-design-decisions)
 
-赛道2 Agentic AI 要求构建具备 reasoning / planning / **tool use** / memory / task execution 的智能体，示例涵盖 enterprise copilot、workflow automation、local RAG assistant、multi-agent system。评分：
+---
 
-| 维度 | 分值 | 说明 |
+## 1. Project Positioning & Track Alignment
+
+### 1.1 Track Requirements
+
+Track 2 (Agentic AI) requires building an agent with reasoning / planning / **tool use** / memory / task execution. Example domains include enterprise copilot, workflow automation, local RAG assistant, and multi-agent systems. Scoring:
+
+| Dimension | Points | Notes |
 |---|---|---|
-| 功能完整度与应用价值 | 60 | 主战场 |
-| AMD Radeon GPU / ROCm 优化 | 40 | 含本地推理执行 + 推理速度优化 |
+| Functional Completeness & Application Value | 60 | Main battleground |
+| AMD Radeon GPU / ROCm Optimization | 40 | Includes local inference execution + inference speed optimization |
 
-### 1.2 本项目契合点
+### 1.2 Project Alignment
 
-- **tool use**：通过 MCP 调用监控 API / SSH / 配置修改 / 服务重启
-- **RAG**：本地运维知识库（runbook / 调优经验 / 参数推荐）
-- **workflow automation**：告警触发 -> 诊断 -> 修复闭环
-- **multi-agent（逻辑多代理）**：master + 巡检/修复/question 子session
-- **reasoning + planning**：ReAct 循环 + 结构化操作计划
-- **memory**：DB 持久化事件历史与状态卡
-- **local inference on Radeon**：llama.cpp + ROCm 本地推理
+- **Tool use**: Invoke monitoring APIs / SSH / config modification / service restarts via MCP
+- **RAG**: Local ops knowledge base (runbooks / tuning experience / parameter recommendations)
+- **Workflow automation**: Alert-triggered → diagnosis → repair closed loop
+- **Multi-agent (logical)**: Master + inspection/repair/question sub-sessions
+- **Reasoning + planning**: ReAct loop + structured operation plans
+- **Memory**: DB-persisted event history and state cards
+- **Local inference on Radeon**: llama.cpp + ROCm local inference
 
-### 1.3 差异化卖点
+### 1.3 Differentiators
 
-1. **24h 无人值守 loop**：周期巡检 + 事件驱动修复，带分级审批与紧急覆盖
-2. **安全护栏完整**：风险分级 + dry-run + 审批门 + 审计日志 + 回滚 + 自动熔断升级
-3. **学习闭环**：解决故障后回写 runbook（置信度门控 + 人工审核）
-4. **上下文工程**：一次性 context + DB 状态传递，规避长上下文推理衰减
-
----
-
-## 2. 场景定义
-
-### 2.1 目标
-
-大数据平台（Hadoop 生态集群）的自治运维 agent：自动巡检健康状态、告警触发自动诊断与修复、历史可回溯可提问。
-
-### 2.2 集群环境
-
-- **3 节点 Hadoop 集群**（开源栈，弃用 Cloudera CDP 以避免授权问题并保证评委可复现）
-  - 组件：HDFS（NameNode/DataNode）、YARN（ResourceManager/NodeManager）、Hive（MetaStore/Server）、HBase（Master/RegionServer）
-  - 部署：docker-compose 起 3 节点，可复现
-- **监控栈**：Prometheus（指标采集+告警）+ Alertmanager（告警路由+webhook）+ Grafana（可视化）
-- **网络**：局域网，agent 通过工具（HTTP API / SSH）访问与操作集群
-
-### 2.3 agent 定位
-
-- **不替代监控平台**：监控平台负责采指标+发告警（其擅长），agent 负责**跨组件关联 + 根因解读 + 主动深检 + 修复执行**（监控做不到的）
-- 例：监控报"NameNode RPC 延迟高"，agent 关联"DataNode3 心跳丢失" + 查日志 = 定位根因并修复
+1. **24h unattended loop**: Periodic inspection + event-driven repair, with tiered approval and emergency override
+2. **Comprehensive safety guardrails**: Risk grading + dry-run + approval gate + audit log + rollback + auto-circuit-breaker escalation
+3. **Learning closed loop**: Post-resolution runbook writeback (confidence gating + human review)
+4. **Context engineering**: One-shot context + DB state passing, avoiding long-context reasoning degradation
 
 ---
 
-## 3. 评分拆解与策略
+## 2. Scenario Definition
 
-| 分项 | 策略 |
+### 2.1 Objective
+
+Autonomous operations agent for big data platforms (Hadoop ecosystem clusters): automatically inspect health status, trigger diagnosis and repair on alerts, with historical traceability and queryability.
+
+### 2.2 Cluster Environment
+
+- **3-node Hadoop cluster** (open-source stack; Cloudera CDP dropped to avoid licensing issues and ensure judge reproducibility)
+  - Components: HDFS (NameNode/DataNode), YARN (ResourceManager/NodeManager), Hive (MetaStore/Server), HBase (Master/RegionServer)
+  - Deployment: docker-compose with 3 nodes, fully reproducible
+- **Monitoring stack**: Prometheus (metrics collection + alerting) + Alertmanager (alert routing + webhook) + Grafana (visualization)
+- **Network**: LAN; agent accesses and operates the cluster via tools (HTTP API / SSH)
+
+### 2.3 Agent Positioning
+
+- **Does not replace the monitoring platform**: The monitoring platform collects metrics and emits alerts (what it's good at); the agent handles **cross-component correlation + root-cause interpretation + proactive deep inspection + repair execution** (what monitoring cannot do)
+- Example: Monitoring reports "NameNode RPC latency high"; the agent correlates "DataNode3 heartbeat lost" + checks logs = identifies root cause and repairs
+
+---
+
+## 3. Scoring Breakdown & Strategy
+
+| Sub-item | Strategy |
 |---|---|
-| 功能完整度 (60) | 多剧本闭环 + 安全护栏 + 24h loop + 学习回写 |
-| Radeon/ROCm 优化 (40) | HIPBLAS 编译（非 Vulkan）、KV q4、FA、mmap、prompt-cache、上下文裁剪控速 |
+| Functional Completeness (60) | Multi-scenario closed loop + safety guardrails + 24h loop + learning writeback |
+| Radeon/ROCm Optimization (40) | HIPBLAS build (not Vulkan), KV q4, FA, mmap, prompt-cache, context trimming for speed control |
 
-**演示关键**：评委进不了局域网集群 -> 必须提供：① 端到端录屏 ② docker-compose 可复现环境 ③ 架构图 + README 复现步骤 ④ 性能数据（tokens/s、TTFT、VRAM、故障解决耗时）。
+**Demo-critical**: Judges cannot access the LAN cluster → must provide: ① End-to-end screen recording ② docker-compose reproducible environment ③ Architecture diagram + README reproduction steps ④ Performance data (tokens/s, TTFT, VRAM, fault resolution time).
 
 ---
 
-## 4. 运行环境与推理优化
+## 4. Runtime Environment & Inference Optimization
 
-### 4.1 硬件与环境（双环境：远程推理 + 本地编排）
+### 4.1 Hardware & Environment (Dual Environment: Remote Inference + Local Orchestration)
 
-**部署架构（已定）：远程纯推理，本地跑 Hadoop + agent + web**
+**Deployment architecture (decided): Remote inference only, local runs Hadoop + agent + web**
 
-- 远程：仅 llama-server（推理服务），本地通过 SSH 隧道或暴露端口调用
-- 本地：Docker（Hadoop 3 节点 + Prometheus + Alertmanager + Grafana）+ agent 编排 + MCP 工具 + web UI
-- 分工清晰：推理面（远程 GPU）/ 数据面+控制面（本地 CPU）
+- Remote: Only llama-server (inference service); local calls via SSH tunnel or exposed port
+- Local: Docker (Hadoop 3 nodes + Prometheus + Alertmanager + Grafana) + agent orchestration + MCP tools + web UI
+- Clear separation: Inference plane (remote GPU) / Data plane + Control plane (local CPU)
 
-**主环境（远程 AMD 云，推理服务）**
+**Primary Environment (Remote AMD Cloud, Inference Service)**
 
-- GPU：AMD Radeon PRO W7900D（48GB VRAM，gfx1100 / Navi 31，ROCm 官方支持）
-- CPU：AMD EPYC 9334 32-Core / 128 线程
-- 仅跑 llama-server，端口 8080，API key 由环境变量 `LLAMA_API_KEY` 注入（勿硬编码）
-- 存储：`/workspace` 持久卷 20G（放模型 + bootstrap.sh）；overlay 根非持久
-- llama-server 二进制：`/opt/llama.cpp/llama-server`（符号链接 -> `build/bin/llama-server`）
-- 连接：SSH `root@<REMOTE_IP> -p <PORT>`（安全组已放行）
-- **本地访问推理 API：SSH 隧道 `http://127.0.0.1:18080` -> 远程 8080**（已验证 tool-calling 端到端通）
-- 隧道命令：`ssh -o ServerAliveInterval=30 -L 18080:127.0.0.1:8080 -p <PORT> root@<REMOTE_IP> -N`
-- 注：远程 jupyter-lab 为 PID 1（端口 8888），不可 kill（会重启容器）
+- GPU: AMD Radeon PRO W7900D (48GB VRAM, gfx1100 / Navi 31, officially supported by ROCm)
+- CPU: AMD EPYC 9334 32-Core / 128 threads
+- Runs only llama-server, port 8080; API key injected via env var `LLAMA_API_KEY` (never hardcoded)
+- Storage: `/workspace` persistent volume 20G (holds model + bootstrap.sh); overlay root is non-persistent
+- llama-server binary: `/opt/llama.cpp/llama-server` (symlink → `build/bin/llama-server`)
+- Connection: SSH `root@<REMOTE_IP> -p <PORT>` (security group already opened)
+- **Local access to inference API: SSH tunnel `http://127.0.0.1:18080` → remote 8080** (tool-calling verified end-to-end)
+- Tunnel command: `ssh -o ServerAliveInterval=30 -L 18080:127.0.0.1:8080 -p <PORT> root@<REMOTE_IP> -N`
+- Note: Remote jupyter-lab is PID 1 (port 8888); do not kill it (will restart the container)
 
-**兜底环境（本地 7900XTX，远程不可用时退回）**
+**Fallback Environment (Local 7900 XTX, used when remote is unavailable)**
 
-- GPU + agent + Hadoop 全部本地跑（推理+编排合体）
+- GPU + agent + Hadoop all run locally (inference + orchestration combined)
+- GPU: AMD Radeon 7900 XTX (24GB VRAM, gfx1100 / Navi 31)
+- Memory: 32GB RAM
+- OS: Ubuntu minimal install, no GUI; BIOS + driver with Resizable BAR / Smart Access Memory enabled
+- Resource-constrained; config needs downgrading (see §4.7 fallback startup command)
 
-- GPU：AMD Radeon 7900 XTX（24GB VRAM，gfx1100 / Navi 31）
-- 内存：32GB RAM
-- 系统：Ubuntu 最小化安装，无图形界面；BIOS + 驱动开启 Resizable BAR / Smart Access Memory
-- 资源紧张，配置需降级（见 4.7 兜底启动命令）
+**Environment Configuration Differences**
 
-**两环境配置差异**
-
-| 项 | 主（W7900D 48GB） | 兜底（7900XTX 24GB） |
+| Item | Primary (W7900D 48GB) | Fallback (7900 XTX 24GB) |
 |---|---|---|
-| 模型 | Q4_K_M | Q4_K_M |
-| KV 量化 | **q8_0**（有富余换质量） | **q4_0**（省显存） |
-| 上下文 | **128k** | **32-64k**（128k 放不下：16+8+2=26GB>24GB） |
-| `-ngl` | 999 全卸载 | 999 全卸载 |
-| Flash Attn | `-fa on` | `-fa on` |
-| 显存占用 | ~21.7GB/51.5GB | ~20-22GB/24GB（紧） |
+| Model | Q4_K_M | Q4_K_M |
+| KV Quantization | **q8_0** (spare VRAM → trade for quality) | **q4_0** (save VRAM) |
+| Context | **128k** | **32–64k** (128k won't fit: 16+8+2=26GB > 24GB) |
+| `-ngl` | 999 full offload | 999 full offload |
+| Flash Attention | `-fa on` | `-fa on` |
+| VRAM Usage | ~21.7GB / 51.5GB | ~20–22GB / 24GB (tight) |
 
-> 兜底环境上下文上限 32-64k：与设计目标"常态 16-32k"一致，仅罕见深诊断需 128k（主环境才有）。日常巡检/修复在兜底环境可正常跑。
+> Fallback environment context limit 32–64k: consistent with the design goal of "normal 16–32k"; only rare deep diagnosis requires 128k (primary env only). Daily inspection/repair runs fine on the fallback environment.
 
-### 4.2 系统
+### 4.2 System
 
-- 主环境：远程云容器（Ubuntu），W7900D 为 gfx1100，ROCm 官方支持，**无需 HSA_OVERRIDE_GFX_VERSION**
-- 兜底环境：本机 Ubuntu 最小化，BIOS 开 Resizable BAR
-- 两环境均为 ROCm/HIP 后端，非 Vulkan
+- Primary env: Remote cloud container (Ubuntu); W7900D is gfx1100, officially supported by ROCm — **no HSA_OVERRIDE_GFX_VERSION needed**
+- Fallback env: Local Ubuntu minimal; BIOS with Resizable BAR enabled
+- Both environments use ROCm/HIP backend, not Vulkan
 
-### 4.3 推理后端（已验证）
+### 4.3 Inference Backend (Verified)
 
-- **llama.cpp 035cd8f9a（build 9766）**，已用 **ROCm/HIP 后端**编译（`-DGGML_HIPBLAS=ON`）
-- `ldd` 确认链接 `libamdhip64.so` / `libhipblas.so` / `librocblas.so` 等 ROCm 库 ✅
-- **禁用 Vulkan**：赛题 40 分明确要求 ROCm，Vulkan 不计 ROCm 分
-- 单一 llama-server 进程，占 GPU；其余组件全 CPU
+- **llama.cpp 035cd8f9a (build 9766)**, compiled with **ROCm/HIP backend** (`-DGGML_HIPBLAS=ON`)
+- `ldd` confirms linkage to `libamdhip64.so` / `libhipblas.so` / `librocblas.so` and other ROCm libraries ✅
+- **Vulkan disabled**: The 40-point scoring explicitly requires ROCm; Vulkan does not count toward ROCm score
+- Single llama-server process occupies the GPU; all other components run on CPU
 
-### 4.4 模型（实测）
+### 4.4 Model (Tested)
 
-- 模型：`Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf`（Qwen 系 27B 稠密，支持 tool-calling ✅ 已验证）
-- 路径：`/workspace/Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf`
-- 量化：GGUF **Q4_K_M**（权重约 16GB）
-- **thinking 模型**：chat 模板 `thinking=1`，输出 `<think>` 推理。**实测 `reasoning_content` 作为独立字段返回**（不混入 content），agent 直接读字段即可，无需自行解析剥离标签
-- **MTP（Multi-Token Prediction）**：GGUF 含 MTP 层，已启用投机解码（`--spec-type draft-mtp --spec-draft-n-max 1`）。基准测试 n_max=1~8，最优 n_max=1 达 37.5 t/s（+30% vs baseline 28.9 t/s），接受率 77.4%。n_max 越大接受率衰减越快（n_max=8 仅 24%）
-- KV 量化升级为 **q8_0**（48GB 显存有富余，长上下文注意力误差更小，利于读日志诊断的 agent）
+- Model: `Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf` (Qwen-family 27B dense, supports tool-calling ✅ verified)
+- Path: `/workspace/Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf`
+- Quantization: GGUF **Q4_K_M** (~16GB weights)
+- **Thinking model**: Chat template `thinking=1`, outputs `<think>` reasoning. **Verified: `reasoning_content` is returned as a separate field** (not mixed into content); the agent reads it directly — no need to parse/strip tags manually
+- **MTP (Multi-Token Prediction)**: GGUF contains MTP layers; speculative decoding enabled (`--spec-type draft-mtp --spec-draft-n-max 1`). Benchmark n_max=1~8; optimal n_max=1 achieves 37.5 t/s (+30% vs baseline 28.9 t/s), acceptance rate 77.4%. Larger n_max → faster acceptance decay (n_max=8 only 24%)
+- KV quantization upgraded to **q8_0** (48GB VRAM has headroom; smaller long-context attention error, beneficial for log-reading agent)
 
-### 4.5 推理优化清单（实测）
+### 4.5 Inference Optimization Checklist (Tested)
 
-| 项 | 状态 | 说明 |
+| Item | Status | Notes |
 |---|---|---|
-| HIPBLAS（ROCm） | ✅ 已验证 | `ldd` 见 libamdhip64 等；非 Vulkan |
-| KV cache 量化 | **q8_0** | `-ctk q8_0 -ctv q8_0`（48GB 有富余，从原 q4 升级换质量） |
-| Flash Attention | ✅ 开 | `-fa on`（此版本需带值 on/off/auto） |
-| mmap 加载 | ✅ 默认 | 无需 flag |
-| Prompt caching | ✅ 已验证 | 实测 181/198 prompt tokens 命中缓存 |
-| 上下文裁剪 | 必须 | 见第 8 节，控速核心 |
-| 狂暴模式/超频 | 不开 | 云上无此选项，稳定性优先 |
+| HIPBLAS (ROCm) | ✅ Verified | `ldd` shows libamdhip64 etc.; not Vulkan |
+| KV cache quantization | **q8_0** | `-ctk q8_0 -ctv q8_0` (48GB headroom, upgraded from q4 for quality) |
+| Flash Attention | ✅ On | `-fa on` (this version requires value on/off/auto) |
+| mmap loading | ✅ Default | No flag needed |
+| Prompt caching | ✅ Verified | Tested: 181/198 prompt tokens cache hits |
+| Context trimming | Required | See §8, core speed-control mechanism |
+| Overclocking | Off | Not available on cloud; stability first |
 
-### 4.6 性能基线（实测，Q4_K_M + KV q8 + 128k 上下文，W7900D）
+### 4.6 Performance Baseline (Measured, Q4_K_M + KV q8 + 128k context, W7900D)
 
-**生成速度（短 prompt 长生成）**
+**Generation Speed (short prompt, long generation)**
 
-| max_tokens | 生成 t/s | prompt t/s | TTFT |
+| max_tokens | Generation t/s | Prompt t/s | TTFT |
 |---|---|---|---|
 | 2048 | 29.0 | 264.9 | 0.25s |
 | 4096 | 29.1 | 228.5 | 0.22s |
 
-**上下文衰减曲线（长 prompt 短生成 512 tokens）**
+**Context Decay Curve (long prompt, short generation 512 tokens)**
 
-| 上下文 | 生成 t/s | prompt 处理 t/s | TTFT | 墙钟 |
+| Context | Generation t/s | Prompt processing t/s | TTFT | Wall clock |
 |---|---|---|---|---|
 | 4k | 28.6 | 341 | 1.5s | 8s |
 | 16k | 25.9 | 213 | 71.5s | 78s |
 | 32k | 22.9 | 106 | 189.8s | 199s |
-| 64k | ~18-20（趋势） | ~60（趋势） | >5min | 很长 |
+| 64k | ~18–20 (trend) | ~60 (trend) | >5min | Very long |
 
-**VRAM 占用**：~21.7GB / 51.5GB（留 30GB 余量）
+**VRAM Usage**: ~21.7GB / 51.5GB (30GB headroom remaining)
 
-**关键发现（指导 agent 设计）**：
-1. **生成速度衰减慢**：4k->32k 仅降 20%（28.6->22.9 t/s），生成不是瓶颈
-2. **prompt 处理是瓶颈**：TTFT 随上下文暴涨（4k=1.5s -> 32k=190s），因 KV q8 + FA 在长 prompt 上处理变慢
-3. **验证设计**：一次性 context + DB 状态传递 -> 每次新 session 从小 context 开局（TTFT 极短），不用长 prompt
-4. **工具输出预压缩更重要**：大日志塞进 prompt = TTFT 灾难，必须预压缩
-5. **目标**：常态工作上下文压在 **16k 以内**（TTFT < 2s，生成 ~26 t/s），32k+ 仅罕见深诊断
+**Key Findings (guiding agent design)**:
+1. **Generation speed decays slowly**: 4k→32k only drops 20% (28.6→22.9 t/s); generation is not the bottleneck
+2. **Prompt processing is the bottleneck**: TTFT explodes with context (4k=1.5s → 32k=190s), because KV q8 + FA is slower on long prompts
+3. **Validates design**: One-shot context + DB state passing → each new session starts with a small context (very short TTFT), no long prompts
+4. **Tool output pre-compression is more critical**: Stuffing large logs into the prompt = TTFT disaster; must pre-compress
+5. **Target**: Keep normal working context under **16k** (TTFT < 2s, generation ~26 t/s); 32k+ only for rare deep diagnosis
 
-### 4.7 启动命令
+### 4.7 Startup Commands
 
-**主环境（远程 W7900D 48GB，实测可用）**
+**Primary Environment (Remote W7900D 48GB, verified working)**
 
 ```bash
 cd /opt/llama.cpp
@@ -219,10 +219,10 @@ HIP_VISIBLE_DEVICES=0 ./llama-server \
   --api-key "$LLAMA_API_KEY"
 ```
 
-**兜底环境（本地 7900XTX 24GB，远程不可用时退回）**
+**Fallback Environment (Local 7900 XTX 24GB, used when remote is unavailable)**
 
 ```bash
-cd /opt/llama.cpp   # 或本机 llama.cpp 路径
+cd /opt/llama.cpp   # or local llama.cpp path
 
 HIP_VISIBLE_DEVICES=0 ./llama-server \
   -m /path/to/Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf \
@@ -238,72 +238,72 @@ HIP_VISIBLE_DEVICES=0 ./llama-server \
   --api-key "$LLAMA_API_KEY"
 ```
 
-> 兜底环境差异：KV 降 q4_0、上下文降 64k（128k 放不下 24GB）、`-t` 按本机物理核调。日常巡检/修复不受影响，仅罕见深诊断的 128k 在主环境跑。
+> Fallback differences: KV downgraded to q4_0, context reduced to 64k (128k won't fit in 24GB), `-t` tuned to local physical cores. Daily inspection/repair is unaffected; only rare deep diagnosis requiring 128k runs on the primary environment.
 
-### 4.8 重启恢复脚本
+### 4.8 Restart Recovery Script
 
-远程容器重启会丢失 overlay 层（sshd/modelscope/进程全没），`/workspace` 持久卷保留。脚本放在 `/workspace/bootstrap.sh`，重启后通过云平台 Web 终端执行：
+Remote container restarts lose the overlay layer (sshd/modelscope/processes all gone); `/workspace` persistent volume is preserved. Script placed at `/workspace/bootstrap.sh`; after restart, execute via cloud platform web terminal:
 
 ```bash
 bash /workspace/bootstrap.sh
 ```
 
-脚本一键完成：① 安装+启动 sshd（恢复公钥认证）② 安装 modelscope ③ 检查模型，缺失则 `modelscope download` 下载 Q4_K_M ④ 后台启动 llama-server（nohup，日志 `/workspace/llama-server.log`）。幂等可重复执行。脚本源码见项目 `scripts/bootstrap.sh`。
+The script completes in one shot: ① Install + start sshd (restore public key auth) ② Install modelscope ③ Check model, download Q4_K_M via `modelscope download` if missing ④ Start llama-server in background (nohup, log at `/workspace/llama-server.log`). Idempotent and repeatable. Source: `scripts/bootstrap.sh` in the project.
 
 ---
 
-## 5. 核心设计：24h 无人值守 + 分级自治
+## 5. Core Design: 24h Unattended Operation + Tiered Autonomy
 
-> 本节为安全护栏的最终落地方案，涵盖分级自治、定级规则、执行策略、审批通道与审计机制。
+> This section is the final implementation plan for safety guardrails, covering tiered autonomy, grading rules, execution policies, approval channels, and audit mechanisms.
 
-### 5.1 设计原则
+### 5.1 Design Principles
 
-- **定级权归规则，不归模型**：模型若参与定级，可能把不可逆操作判成"低风险自动执行"。风险等级必须由模型够不着的规则决定。
-- **工具白名单天然可分类**：agent 只能调 `TOOL_DEFINITIONS` 注册的工具，没有裸 shell。每个动作都能确定性映射到某一档，无需模型"理解意图"。
-- **fail-closed**：任何不在白名单 / 无匹配规则的工具，一律按 `irreversible` + 不可自动处理，绝不放过。
-- **模型的合法角色仅两项**：① 选哪个工具（tool-use reasoning）；② 给出理由文字（写进审计 / 给人看）。理由不参与定级。
+- **Grading authority belongs to rules, not the model**: If the model participates in grading, it might classify an irreversible operation as "low risk, auto-execute." Risk tier must be determined by rules the model cannot reach.
+- **Tool whitelist is naturally classifiable**: The agent can only invoke tools registered in `TOOL_DEFINITIONS`; there is no raw shell. Every action can be deterministically mapped to a tier — no need for the model to "understand intent."
+- **Fail-closed**: Any tool not on the whitelist / without a matching rule is treated as `irreversible` + not auto-executable — never let it through.
+- **The model's legitimate roles are only two**: ① Choose which tool (tool-use reasoning); ② Provide a reason text (written to audit / shown to humans). The reason does not participate in grading.
 
-### 5.2 双轴模型
+### 5.2 Dual-Axis Model
 
-| 轴 | 取值 | 含义 |
+| Axis | Values | Meaning |
 |---|---|---|
-| 轴1 自治模式 `AUTONOMY` | `supervised` / `autonomous` | **谁来决策**：值守（等 Web 人工）还是无人值守（策略自动） |
-| 轴2 操作自治等级 `tier` | `recover` / `reversible` / `irreversible` / `low` / `medium` | **策略怎么动** |
+| Axis 1: Autonomy mode `AUTONOMY` | `supervised` / `autonomous` | **Who decides**: On-duty (wait for Web human approval) or unattended (policy-driven automatic) |
+| Axis 2: Operation autonomy tier `tier` | `recover` / `reversible` / `irreversible` / `low` / `medium` | **How to act** |
 
-四档在 `autonomous` 下的行为：
+Behavior of the four tiers under `autonomous` mode:
 
-| 等级 | 典型操作 | autonomous 行为 | supervised 行为 |
+| Tier | Typical Operations | Autonomous Behavior | Supervised Behavior |
 |---|---|---|---|
-| `low` / `medium` | 只读 / 重启非核心 | 自动执行 | 自动执行 |
-| `recover`（可恢复幂等） | 重启已 `DOWN`/`STOPPED` 的服务 | 自动执行，受 attempt 节流（重试上限+冷却），连续失败升级人工 | 等人工审批 |
-| `reversible`（可回撤） | 改配置前先备份→改→重启 | 自动执行，强制先备份留回滚点，仍写审计 | 等人工审批 |
-| `irreversible`（不可逆） | `hdfs format` / `disk format` / `rm` 关键文件 / `drop table` | **永不自动**：直接放弃本次操作 + 发升级告警 | 等人工审批；超时=拒绝 |
+| `low` / `medium` | Read-only / restart non-critical | Auto-execute | Auto-execute |
+| `recover` (recoverable idempotent) | Restart a service already `DOWN`/`STOPPED` | Auto-execute, subject to attempt throttling (retry limit + cooldown); escalate to human on consecutive failures | Wait for human approval |
+| `reversible` (undoable) | Backup config → modify → restart | Auto-execute, forced backup first for rollback point; still writes audit | Wait for human approval |
+| `irreversible` | `hdfs format` / `disk format` / `rm` critical files / `drop table` | **Never automatic**: abort + emit escalation alert | Wait for human approval; timeout = decline |
 
-### 5.3 定级：纯规则 + DB 支撑 + 页面可配
+### 5.3 Grading: Pure Rules + DB-Backed + UI-Configurable
 
-定级是**确定性纯函数**，由两层规则组成，均不调模型：
+Grading is a **deterministic pure function** composed of two rule layers, neither invoking the model:
 
 ```
 classify(tool_name, args) -> tier, autonomous:
-    1) 查 risk_rules 表（带 TTL 缓存）：
-       取 enabled 且 (tool_name==name 且 match_json 命中 args) 中 priority 最高者
-    2) 若无则取 tool_name=='*' 的默认规则
-    3) 若仍无 → 代码兜底 (tier=irreversible, autonomous=False)  # fail-closed
-    4) 运行时精炼（仍是规则，读集群实时状态）：
+    1) Query risk_rules table (with TTL cache):
+       Among enabled rules where (tool_name==name AND match_json hits args), pick highest priority
+    2) If none, use the default rule where tool_name=='*'
+    3) If still none → code fallback (tier=irreversible, autonomous=False)  # fail-closed
+    4) Runtime refinement (still rules, reading live cluster state):
        if tool == restart_service:
            state = get_service_state(args.service, args.node)
-           if state in {STOPPED, DOWN, UNKNOWN}: 维持 recover
-           else (RUNNING 但不健康): 降为等人工 (irreversible 流程)
-    5) 返回 (tier, autonomous)
+           if state in {STOPPED, DOWN, UNKNOWN}: keep as recover
+           else (RUNNING but unhealthy): downgrade to human-wait (irreversible flow)
+    5) Return (tier, autonomous)
 ```
 
-**`risk_rules` 表（定级权威来源，页面可增删改）**
+**`risk_rules` table (authoritative grading source, UI-editable)**
 
 ```sql
 CREATE TABLE risk_rules (
   id          TEXT PRIMARY KEY,
-  tool_name   TEXT NOT NULL,   -- 匹配工具名; '*' 表示默认
-  match_json  TEXT,            -- 可选: 按 args 细分, NULL=任意
+  tool_name   TEXT NOT NULL,   -- match tool name; '*' means default
+  match_json  TEXT,            -- optional: sub-classify by args; NULL=any
   tier        TEXT NOT NULL,   -- recover|reversible|irreversible|low|medium
   autonomous  INTEGER NOT NULL DEFAULT 0,
   enabled     INTEGER NOT NULL DEFAULT 1,
@@ -313,24 +313,24 @@ CREATE TABLE risk_rules (
 );
 ```
 
-- **种子数据**：首次启动若表空，从 `TOOL_RISK`（`tools.py`）灌默认规则，开箱即用。
-- **缓存**：`classify` 查库带 TTL 缓存，避免每次工具调用打 DB。
-- **UI 护栏**：`irreversible` 档在管理页面禁止把 `autonomous` 勾成 1（代码强制），防管理员手滑。
-- **fail-closed 兜底**保留在代码常量，DB 规则缺失时生效。
+- **Seed data**: On first startup, if table is empty, populate default rules from `TOOL_RISK` (in `tools.py`) — works out of the box.
+- **Cache**: `classify` queries DB with TTL cache to avoid hitting DB on every tool call.
+- **UI guardrail**: The `irreversible` tier disables the `autonomous` checkbox on the admin page (code-enforced) — prevents admin mistakes.
+- **Fail-closed fallback** retained in code constants; takes effect when DB rules are missing.
 
-### 5.4 各档执行细节
+### 5.4 Execution Details per Tier
 
-- **`recover`**：仅当服务状态 ∈ {STOPPED, DOWN, UNKNOWN} 才自动重启（已挂，重启不会更糟）；若服务 RUNNING 但不健康（如 GC overhead / 假死），不主动制造中断，转人工或仅通知。重启走 SSH，受 §5.5 attempt 节流。
-- **`reversible`**：执行前 `cp file file.bak.<ts>`，改完 reload/重启；回滚点可追溯。工具 `edit_remote_config` 落地此档。
-- **`irreversible`**：永不自动。supervised 等审批；autonomous 直接放弃 + 升级告警（不傻等超时）。
-- **`low`/`medium`**：自动 / 执行+通知。
+- **`recover`**: Auto-restart only when service state ∈ {STOPPED, DOWN, UNKNOWN} (already down; restart won't make it worse). If service is RUNNING but unhealthy (e.g., GC overhead / hung), do not proactively cause interruption — escalate to human or notify only. Restart via SSH, subject to §5.5 attempt throttling.
+- **`reversible`**: Before execution, `cp file file.bak.<ts>`; after modification, reload/restart; rollback point is traceable. Tool `edit_remote_config` implements this tier.
+- **`irreversible`**: Never automatic. Supervised waits for approval; autonomous directly aborts + escalates alert (no dumb timeout wait).
+- **`low`/`medium`**: Auto-execute / execute + notify.
 
-### 5.5 高危尝试节流（覆盖 recover + reversible）
+### 5.5 High-Risk Attempt Throttling (covers recover + reversible)
 
-熔断只数**失败**（`_failure_counts`）。新增**尝试节流**，覆盖所有高危档的**每次 autonomous 执行**（成功也算）：
+Circuit breaker only counts **failures** (`_failure_counts`). Added **attempt throttling** covering every autonomous execution of all high-risk tiers (successes count too):
 
-- **键**：`(tool, target)`，target = service / node / path。
-- **计数派生自 `audit_log`**（无需新状态，天然持久化、跨 session / 重启不丢）：
+- **Key**: `(tool, target)`, where target = service / node / path.
+- **Count derived from `audit_log`** (no new state needed; naturally persistent, survives across sessions / restarts):
 
 ```sql
 SELECT COUNT(*) FROM audit_log
@@ -338,223 +338,223 @@ SELECT COUNT(*) FROM audit_log
    AND ts > now - WINDOW;
 ```
 
-- **冷却**：两次 autonomous 执行间隔 < `cooldown` 则拒绝。
-- **超限升级**：`attempts >= MAX_ATTEMPTS` → 标记 escalated、停止该键的 autonomous 自动执行、发升级告警。
-- 与熔断互补：熔断管"一直失败"，attempt 节流管"试了 N 次还不成就放弃"。
+- **Cooldown**: If interval between two autonomous executions < `cooldown`, reject.
+- **Over-limit escalation**: `attempts >= MAX_ATTEMPTS` → mark escalated, stop autonomous execution for that key, emit escalation alert.
+- Complementary to circuit breaker: breaker manages "keeps failing"; attempt throttle manages "tried N times without success, give up."
 
-### 5.6 其他安全机制
+### 5.6 Other Safety Mechanisms
 
-- **工具白名单**：SSH 工具只允许白名单命令，模型输出经结构化解析+校验后才执行，不直接喂 shell
-- **dry-run（预演）**：高危操作先返回"会发生什么"而不真执行，用于 agent 自验 + 人工审批前预览
-- **审计日志**：每次工具调用（谁/何时/什么/结果/是否审批）写 `audit_log` 表，24h 无人值守操作必须可追溯
-- **回滚**：`edit_remote_config` 改配置前自动 `cp .bak.<ts>` 备份，替换失败自动回滚
+- **Tool whitelist**: SSH tools only allow whitelisted commands; model output is structurally parsed + validated before execution — never fed directly to shell.
+- **Dry-run (preview)**: High-risk operations first return "what would happen" without actually executing — for agent self-validation + human preview before approval.
+- **Audit log**: Every tool call (who / when / what / result / whether approved) written to `audit_log` table. 24h unattended operations must be traceable.
+- **Rollback**: `edit_remote_config` automatically `cp .bak.<ts>` before modifying config; auto-rollback on replacement failure.
 
-### 5.7 审批通道
+### 5.7 Approval Channel
 
-- **自建 Web 审批页**（全在 web，含其他管理员操作）
-- 纯 web 无推送 = 凌晨高危审批无人看到 → 按超时策略自动 decline / 紧急覆盖，逻辑自洽
-- `AUTO_APPROVE`（`config.py`）已演进为 `AUTONOMY` 模式（supervised/autonomous），语义更清晰
-- 现有熔断（`max_failures`/`cooldown`）保留作失败侧；attempt 节流作尝试侧
+- **Self-built Web approval page** (in web, along with other admin operations)
+- Pure web without push = late-night high-risk approvals unseen → auto-decline / emergency override per timeout policy; logic is self-consistent.
+- `AUTO_APPROVE` (`config.py`) has evolved into `AUTONOMY` mode (supervised/autonomous) — clearer semantics.
+- Existing circuit breaker (`max_failures` / `cooldown`) retained for the failure side; attempt throttle for the attempt side.
 
 ---
 
-## 6. 系统架构总览
+## 6. System Architecture Overview
 
-三层清晰：**推理面（llama.cpp）/ 数据面（Orchestrator+MCP+DB）/ 控制面（web）**。GPU 只给推理层，其余全 CPU。
+Three clear layers: **Inference plane (llama.cpp) / Data plane (Orchestrator+MCP+DB) / Control plane (web)**. GPU is dedicated to the inference layer; everything else runs on CPU.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  前端  Vue3/React + Ant Design Pro                               │
-│  ①审批中心 ②Agent活动台(思考链/工具调用时间线) ③集群状态(嵌Grafana) │
-│  ④管理面(KB增删/监控对接/白名单风险规则)                          │
+│  Frontend  React + Ant Design (dark theme)                      │
+│  ①Approval Center ②Agent Activity (thinking chain/tool timeline) │
+│  ③Cluster Status (embed Grafana) ④Admin (KB/risk rules/config)   │
 └───────────────┬──────────────────────────┬──────────────────────┘
-         REST   │                    WS    │(实时:推理流/审批推送)
+         REST   │                    WS    │(realtime: inference stream/approval push)
 ┌──────────────▼──────────────────────────▼──────────────────────┐
-│  接入层  FastAPI + WebSocket                                      │
+│  Access Layer  FastAPI + WebSocket                                │
 └───────────────┬─────────────────────────────────────────────────┘
 ┌───────────────▼─────────────────────────────────────────────────┐
-│  编排层  Orchestrator (常驻)                                      │
-│   ├─ master 调度器 (纯规则, 不耗LLM): 派发/抢占/优先级            │
-│   ├─ session manager: spawn 用完即焚的子session                   │
-│   └─ approval service: 风险分级/超时/紧急覆盖/计数冷却            │
+│  Orchestration Layer  Orchestrator (daemon)                      │
+│   ├─ Master scheduler (pure rules, no LLM): dispatch/preempt/prio│
+│   ├─ Session manager: spawn ephemeral sub-sessions               │
+│   └─ Approval service: risk grading/timeout/override/cooldown    │
 └──────┬───────────────────────┬──────────────────────────────────┘
        │ HTTP(tools)           │ HTTP(chat/completions, stream)
 ┌──────▼──────────┐    ┌───────▼──────────────────────────────────┐
-│  工具层 MCP server│    │  推理层 llama.cpp server (独立进程)        │
-│  (Python SDK)    │    │  ROCm/HIPBLAS, Qwen27B Q4_K_M              │
-│  Prometheus      │    │  KV q8_0, FA, mmap, prompt-cache, MTP       │
-│  Alertmanager    │    │  占 GPU(权重16G+KV)                        │
-│  SSH(白名单)     │    └───────────────────────────────────────────┘
-│  CM API/HDFS     │
+│  Tool Layer MCP  │    │  Inference Layer llama.cpp server         │
+│  (Python SDK)    │    │  ROCm/HIPBLAS, Qwen27B Q4_K_M             │
+│  Prometheus      │    │  KV q8_0, FA, mmap, prompt-cache, MTP      │
+│  Alertmanager    │    │  Occupies GPU (weights 16G+KV)            │
+│  SSH(whitelist)  │    └───────────────────────────────────────────┘
+│  HDFS admin      │
 └──────┬───────────┘
        │
 ┌──────▼──────────────────────────────────────────────────────────┐
-│  数据层  SQLite (单文件)                                          │
-│   sessions / session_events / incidents / approvals / audit      │
-│   + sqlite-vec (KB向量)  + bge-small(CPU编码)                     │
+│  Data Layer  SQLite (single file)                                 │
+│   sessions / session_events / incidents / approvals / audit       │
+│   + sqlite-vec (KB vectors) + bge-small(CPU encoding)             │
 └──────────────────────────────────────────────────────────────────┘
        │
 ┌──────▼──────────────────────────────────────────────────────────┐
-│  外部  Prometheus+Alertmanager+Grafana  ←->  Hadoop 3节点集群      │
+│  External  Prometheus+Alertmanager+Grafana  ←->  Hadoop 3-node    │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 7. 编排层：Orchestrator + master + 子session
+## 7. Orchestration Layer: Orchestrator + Master + Sub-sessions
 
-### 7.1 Orchestrator（常驻进程）
+### 7.1 Orchestrator (Daemon Process)
 
 ```
-Orchestrator (常驻)
-  ├─ master 调度器 (纯规则, 不耗LLM, 持全局状态卡)
-  │    ├─ 周期 spawn 巡检子session (全新context: 上次状态卡+当前指标)
-  │    ├─ 告警 spawn 修复子session (抢占巡检, 全新context: 事件KB+全工具集)
-  │    └─ 查询 spawn question子session (全新context: 历史库检索)
-  │    每个子session: 跑完 -> 结论落DB + 摘要回master -> context释放
-  ├─ session manager
-  └─ approval service
+Orchestrator (daemon)
+  ├─ Master scheduler (pure rules, no LLM, holds global state card)
+  │    ├─ Periodically spawn inspection sub-session (fresh context: last state card + current metrics)
+  │    ├─ Alert spawn repair sub-session (preempts inspection, fresh context: incident KB + full toolset)
+  │    └─ Query spawn question sub-session (fresh context: history DB retrieval)
+  │    Each sub-session: done → conclusion to DB + summary back to master → context released
+  ├─ Session manager
+  └─ Approval service
 ```
 
-### 7.2 master 调度器（纯规则，不调 LLM）
+### 7.2 Master Scheduler (Pure Rules, No LLM)
 
-master 不读日志不诊断，只决策"现在派巡检还是修复？派给谁？"。用规则：
+The master does not read logs or diagnose; it only decides "dispatch inspection or repair now? To whom?" using rules:
 
-- 有告警 -> 派修复（**抢占巡检**：暂停当前巡检存状态）
-- 到点（如每 5min）-> 派巡检
-- 有用户查询 -> 派 question
-- 多告警 -> 按 severity + 影响范围排序
+- Has alert → dispatch repair (**preempts inspection**: pause current inspection, save state)
+- Timer fires (e.g., every 5min) → dispatch inspection
+- Has user query → dispatch question
+- Multiple alerts → sort by severity + impact scope
 
-纯规则 = 确定性高 + 省一次 LLM 调用 + 不占 context。只有子session 才花 LLM。
+Pure rules = high determinism + saves one LLM call + doesn't consume context. Only sub-sessions spend LLM.
 
-### 7.3 子session（一次性 context）
+### 7.3 Sub-session (One-shot Context)
 
-- **子session = 同一 llama.cpp server 上的独立 context window + 专属 system prompt + 工具子集**，不是独立进程、不占额外显存
-- 单 GPU 无法真正并行 -> /fix 抢占 /auto，**串行执行，不同时跑**（集群出问题时巡检结果也是噪声）
-- subagent 的价值是**上下文隔离**（不是并发）：/fix 读的一大堆日志不污染 /auto 上下文，反之亦然
-- 用完即焚：跑完结论结构化写 DB + 回传 master 一句摘要，context 释放
+- **Sub-session = independent context window on the same llama.cpp server + dedicated system prompt + tool subset** — not a separate process, no extra VRAM
+- Single GPU cannot truly parallelize → /fix preempts /auto, **serial execution, not concurrent** (when the cluster has issues, inspection results are noise anyway)
+- The value of sub-agents is **context isolation** (not concurrency): the pile of logs /fix reads doesn't pollute /auto's context, and vice versa
+- Ephemeral: on completion, conclusion is structured to DB + one-line summary back to master; context released
 
-### 7.4 三类子session
+### 7.4 Three Sub-session Types
 
-| 模式 | 触发 | system prompt 重点 | 工具集 |
+| Mode | Trigger | System Prompt Focus | Toolset |
 |---|---|---|---|
-| /auto 巡检 | 周期 | 跨组件关联+根因解读+主动深检 | 只读工具 |
-| /fix 修复 | 告警抢占 | 诊断+修复执行 | 全工具（含高危） |
-| /question 提问 | 用户查询 | 总结历史+KB | 只读+检索工具 |
+| /auto Inspection | Periodic | Cross-component correlation + root-cause interpretation + proactive deep inspection | Read-only tools |
+| /fix Repair | Alert preemption | Diagnosis + repair execution | Full tools (including high-risk) |
+| /question Query | User query | Summarize history + KB | Read-only + retrieval tools |
 
 ---
 
-## 8. 上下文策略：一次性 context + DB 状态传递
+## 8. Context Strategy: One-shot Context + DB State Passing
 
-目标：常态 context 16-32k（≈35-40 t/s），规避长上下文衰减。比"在单个长 context 里滚动摘要"更省更稳。
+Goal: Keep normal context at 16–32k (≈35–40 t/s), avoiding long-context decay. More efficient and stable than "rolling summary within a single long context."
 
-### 8.1 核心机制
+### 8.1 Core Mechanism
 
-- **事件级隔离**：每个 incident 一个全新 context，事件之间不累积
-- **子session 用完即焚**：跑完结论落 DB，下次是全新 context 从 DB 读状态开局
-- **状态靠 DB 传递，不靠 prompt 记忆**
+- **Event-level isolation**: Each incident gets a fresh context; no accumulation between events
+- **Ephemeral sub-sessions**: On completion, conclusion goes to DB; next session is a fresh context reading state from DB
+- **State passed via DB, not via prompt memory**
 
-### 8.2 冷热分层（原始数据不进 LLM 上下文）
+### 8.2 Hot/Warm/Cold Layering (raw data never enters LLM context)
 
-| 层 | 内容 | 位置 |
+| Layer | Content | Location |
 |---|---|---|
-| 热 | 最近 2-3 个 ReAct 步骤 + 当前工具结果 | LLM context |
-| 温 | 本事件更早步骤摘要 | 压成一段塞 context |
-| 冷 | 完整原始日志/工具输出 | DB/文件，agent 按需用工具取 |
+| Hot | Last 2–3 ReAct steps + current tool result | LLM context |
+| Warm | Earlier steps in this event, summarized | Compressed into one paragraph in context |
+| Cold | Full raw logs / tool outputs | DB/files; agent retrieves on demand via tools |
 
-### 8.3 工具输出预压缩（省 token 大头）
+### 8.3 Tool Output Pre-compression (saves the bulk of tokens)
 
-- `read_logs` 不返回 5000 行原文，返回"最近 1000 行中 3 条 ERROR：[L1, L2, L3]"
-- 要更多再调一次带 filter
+- `read_logs` doesn't return 5000 lines of raw text; returns "3 ERROR lines from the last 1000: [L1, L2, L3]"
+- Need more? Call again with a filter
 
-### 8.4 滚动摘要（兜底）
+### 8.4 Rolling Summary (Fallback)
 
-- 单个子session 内若 context 到阈值（如 32k）-> 把最老 N 轮压成一段摘要，保留近期原文，循环继续
+- If context reaches threshold (e.g., 32k) within a single sub-session → compress the oldest N rounds into a summary paragraph, keep recent raw text, loop continues
 
-### 8.5 结构化状态存 DB
+### 8.5 Structured State in DB
 
-- incident 的"已试过什么/当前假设"存 SQLite JSON
-- 每轮只注入一张紧凑"状态卡"，不把全历史塞 prompt
+- The incident's "what's been tried / current hypothesis" stored as SQLite JSON
+- Each round injects only one compact "state card" — not the full history into the prompt
 
-### 8.6 RAG 按需检索
+### 8.6 RAG On-Demand Retrieval
 
-- 知识库 top-k 检索注入，不预加载
+- Knowledge base top-k retrieval injected as needed; not pre-loaded
 
 ---
 
-## 9. 工具层：MCP server
+## 9. Tool Layer: MCP Server
 
-统一封装为 Python 工具层，agent 只调注册的工具，不接触裸 shell。校验/白名单放工具层内。
+Unified as a Python tool layer; the agent only invokes registered tools, never touching raw shell. Validation / whitelist lives inside the tool layer.
 
-### 9.1 工具清单
+### 9.1 Tool Inventory
 
-| 类别 | 工具 | 说明 |
+| Category | Tool | Description |
 |---|---|---|
-| 监控 | `get_service_status(service)` | SSH 执行 jps/进程检查，返回服务健康状态 |
-| 监控 | `get_alerts()` | 遍历服务健康检查，返回活跃告警 |
-| 监控 | `get_metrics(host)` | SSH 执行 free/df/top，返回系统资源指标 |
-| 诊断 | `read_logs(node, svc, filter, tail_n)` | **预压缩**，返回摘要行非原文 |
-| 诊断 | `hdfs_admin(cmd)` | SSH 执行 dfsadmin/fsck/dfs 只读命令 |
-| 执行 | `restart_service(svc)` | SSH 重启已停止的服务，含风险分级 |
-| 执行 | `edit_remote_config(node, file, key, value)` | SSH 备份+校验+reload，非裸编辑 |
-| 知识 | `search_kb(query)` | 混合检索: 向量+BM25，缺依赖自动降级 |
-| 知识 | `write_runbook(summary)` | 解决后回写，**置信度门控+人工审核**防污染 |
+| Monitoring | `get_service_status(service)` | SSH execute jps/process check; returns service health status |
+| Monitoring | `get_alerts()` | Iterate service health checks; returns active alerts |
+| Monitoring | `get_metrics(host)` | SSH execute free/df/top; returns system resource metrics |
+| Diagnosis | `read_logs(node, svc, filter, tail_n)` | **Pre-compressed**; returns summary lines, not raw text |
+| Diagnosis | `hdfs_admin(cmd)` | SSH execute dfsadmin/fsck/dfs read-only commands |
+| Execution | `restart_service(svc)` | SSH restart a stopped service; includes risk grading |
+| Execution | `edit_remote_config(node, file, key, value)` | SSH backup + validate + reload; not raw editing |
+| Knowledge | `search_kb(query)` | Hybrid retrieval: vector + BM25; auto-degrades when deps missing |
+| Knowledge | `write_runbook(summary)` | Post-resolution writeback; **confidence gating + human review** prevents KB pollution |
 
-### 9.2 write_runbook 学习闭环
+### 9.2 write_runbook Learning Closed Loop
 
-差异化亮点：解决故障后回写 runbook。风险：错误经验被记住污染 KB -> 加置信度门控 + 人工审核（web 管理面审核）。
-
----
-
-## 10. 监控平台对接
-
-### 10.1 选型
-
-**Prometheus + Grafana**（弃 Zabbix：API 老旧、演示效果差）。
-
-### 10.2 集成方式
-
-- **Prometheus HTTP API = 工具层**：`get_metrics` / `get_alerts` 通过 SSH + Prometheus API 获取
-- **Grafana 仪表盘**：已配置 4 个面板（Cluster Overview / HDFS / YARN / HBase+ZK），Web 控制台可跳转查看
+Differentiator: Post-resolution runbook writeback. Risk: incorrect experience gets remembered and pollutes KB → added confidence gating + human review (web admin review).
 
 ---
 
-## 11. Web 控制台
+## 10. Monitoring Platform Integration
 
-### 11.1 定位
+### 10.1 Selection
 
-控制面 + 演示面。审批、管理员操作、推理过程查看、session 回看全在 web。
+**Prometheus + Grafana** (dropped Zabbix: outdated API, poor demo experience).
 
-### 11.2 四块功能
+### 10.2 Integration
 
-1. **审批中心**：WebSocket 实时推送待审批项 + 一键审批
-2. **Agent 活动台**：思考链 / 工具调用 / 事件历史时间线（活跃 session 经 WS 实时流，历史从 DB 回看）
-3. **集群状态**：服务健康状态卡 + Grafana 跳转链接
-4. **管理面**：KB 增删改、监控对接配置（Prometheus 地址/组件）、白名单/风险规则配置
-
-### 11.3 技术栈
-
-- 后端：**FastAPI + WebSocket**（async 配 llama.cpp HTTP 完美）
-- 前端：**Vue3 或 React + Ant Design Pro**（直接用 admin 模板，别从零写）
-- 实时：WebSocket 推推理流 + 审批通知
-- 通知（可选）：webhook 到飞书/钉钉，审批链接指回 web
+- **Prometheus HTTP API = Tool layer**: `get_metrics` / `get_alerts` obtained via SSH + Prometheus API
+- **Grafana dashboards**: 4 panels configured (Cluster Overview / HDFS / YARN / HBase+ZK); Web console can link/jump to view
 
 ---
 
-## 12. Session 记录与回看
+## 11. Web Console
 
-### 12.1 机制
+### 11.1 Positioning
 
-- 每个子session 用完即焚（context 释放）
-- 但**保存 session 调用关系 + 历史记录**用于 web 回看
-- master -> 子session 的 `parent_id` 形成树，web 可下钻任一 session 看完整 ReAct 时间线
+Control plane + demo plane. Approvals, admin operations, inference process viewing, session replay — all in the web.
 
-### 12.2 实时 vs 历史
+### 11.2 Four Functional Areas
 
-- **实时看推理**：活跃 session 的 LLM 流式 token 经 WebSocket 推前端
-- **历史回看**：从 `session_events` 表查
+1. **Approval Center**: WebSocket real-time push of pending approvals + one-click approve/reject
+2. **Agent Activity**: Thinking chain / tool calls / event history timeline (active session streams via WS; history replayed from DB)
+3. **Cluster Status**: Service health status cards + Grafana jump links
+4. **Admin**: KB CRUD, monitoring integration config (Prometheus address/components), whitelist/risk rule config
 
-### 12.3 表结构（见第 16 节）
+### 11.3 Tech Stack
+
+- Backend: **FastAPI + WebSocket** (async pairs perfectly with llama.cpp HTTP)
+- Frontend: **React + Ant Design** (use admin template, don't build from scratch)
+- Realtime: WebSocket pushes inference stream + approval notifications
+- Notification (optional): webhook to Feishu/DingTalk; approval links point back to web
+
+---
+
+## 12. Session Recording & Replay
+
+### 12.1 Mechanism
+
+- Each sub-session is ephemeral (context released)
+- But **session call relationships + history records** are saved for web replay
+- Master → sub-session `parent_id` forms a tree; web can drill into any session to see the full ReAct timeline
+
+### 12.2 Realtime vs History
+
+- **Realtime inference viewing**: Active session's LLM streaming tokens pushed to frontend via WebSocket
+- **History replay**: Query from `session_events` table
+
+### 12.3 Schema (see §16)
 
 ```
 sessions(id, parent_id, type, trigger, status, summary, started_at, ended_at)
@@ -563,134 +563,134 @@ session_events(id, session_id, seq, kind, content_json, ts)
 
 ---
 
-## 13. 知识库 RAG
+## 13. Knowledge Base RAG
 
-### 13.1 用途
+### 13.1 Purpose
 
-本地运维知识库：调优经验、参数推荐、常见故障 runbook。
+Local ops knowledge base: tuning experience, parameter recommendations, common fault runbooks.
 
-### 13.2 存储
+### 13.2 Storage
 
-- **sqlite-vec**（SQLite 向量扩展，in-process）和事件/审计/状态卡**同一个 `.db` 文件**，零额外服务/进程
-- 嵌入模型：**bge-small-zh（~100MB）跑 CPU**，不碰 GPU
-- 量级：几百篇 runbook，CPU 编码足够
+- **sqlite-vec** (SQLite vector extension, in-process) shares **the same `.db` file** as events/audit/state cards — zero extra services/processes
+- Embedding model: **bge-small-zh (~100MB) runs on CPU** — does not touch GPU
+- Scale: hundreds of runbooks; CPU encoding is sufficient
 
-### 13.3 兜底
+### 13.3 Fallback
 
-若连 100MB CPU 嵌入都嫌紧 -> 退回 **SQLite FTS5 做 BM25**（纯关键词，零额外资源）。运维 runbook 关键词为主（DataNode/OOM/GC overhead），BM25 效果也够。
+If even 100MB CPU embedding is too tight → fall back to **SQLite FTS5 for BM25** (pure keyword, zero extra resources). Ops runbooks are keyword-heavy (DataNode/OOM/GC overhead); BM25 works well enough.
 
 ---
 
-## 14. 技术选型
+## 14. Technology Selection
 
-### 14.1 关键认知
+### 14.1 Key Insight
 
-模型是资源大头，固定跑在 llama.cpp server（独立进程，ROCm）。orchestrator 只是发 HTTP + 跑工具 + 管状态，内存占用 ~100-300MB，相对 16GB 模型可忽略。**别为省 orchestrator 资源选语言，按开发速度+生态选。**
+The model is the resource heavyweight, running fixed on llama.cpp server (separate process, ROCm). The orchestrator only sends HTTP + runs tools + manages state; memory footprint ~100–300MB, negligible compared to 16GB model. **Don't choose language to save orchestrator resources; choose by development speed + ecosystem.**
 
-### 14.2 选型
+### 14.2 Selection
 
-| 组件 | 选型 | 理由 |
+| Component | Choice | Rationale |
 |---|---|---|
-| 编排/后端 | **Python + FastAPI** | MCP 官方 SDK、asyncio 配 llama.cpp HTTP、数据处理原生、迭代最快 |
-| 前端 | Vue3/React + Ant Design Pro | admin 模板快速搭 |
-| 推理 | llama.cpp（ROCm/HIPBLAS） | 赛题要求 ROCm |
-| 工具协议 | MCP（Python SDK） | 统一工具层，加分 |
-| DB | SQLite | 事件/审计/状态卡 + sqlite-vec KB 同文件 |
-| 嵌入 | bge-small-zh（CPU） | 不占 GPU |
-| 监控 | Prometheus+Alertmanager+Grafana | 大数据标配，API 友好 |
+| Orchestration/Backend | **Python + FastAPI** | MCP official SDK, asyncio pairs with llama.cpp HTTP, native data processing, fastest iteration |
+| Frontend | React + Ant Design | Admin template for rapid setup |
+| Inference | llama.cpp (ROCm/HIPBLAS) | Track requirement: ROCm |
+| Tool Protocol | MCP (Python SDK) | Unified tool layer; bonus points |
+| DB | SQLite | Events/audit/state cards + sqlite-vec KB in one file |
+| Embedding | bge-small-zh (CPU) | Does not occupy GPU |
+| Monitoring | Prometheus+Alertmanager+Grafana | Big data standard, API-friendly |
 
-### 14.3 不上的东西
+### 14.3 What We Don't Use
 
-- **不上 LangGraph 等重框架**：手写 ReAct 编排器更可控、更好向评委讲清楚、更省资源
-- **subagent 不上独立框架**：= 同 server 独立 context，逻辑概念，资源中性
-- **DAG 不上框架**：planner 产出带依赖的操作步骤图，executor 按拓扑序跑，Python ~50 行
-
----
-
-## 15. 核心数据流
-
-### 15.1 巡检循环（周期，如 5min）
-
-```
-master 到点 -> spawn 巡检子session(全新context)
-  -> 读DB上次状态卡 + MCP调 get_metrics/get_alerts
-  -> LLM推理(流式token经WS推前端)
-  -> 结论写DB(新状态卡+session_events) + 摘要回master
-  -> context释放
-```
-
-### 15.2 告警修复（事件驱动，抢占巡检）
-
-```
-Alertmanager webhook -> Orchestrator -> master 暂停巡检(存状态)
-  -> spawn 修复子session(全新context: 事件KB检索+全工具集)
-  -> LLM ReAct循环: 诊断->调工具->观察->...
-  -> 遇高危op: 走15.3审批
-  -> 执行修复 -> 结果写DB -> 摘要回master -> 恢复巡检
-```
-
-### 15.3 审批流（含超时/紧急覆盖）
-
-```
-子session请求高危op -> approval service记DB(pending) + WS推前端
-  -> 人审批 ───────────────────> 执行/拒绝, 计审计
-  -> 超时(10min) -> 规则判定:
-       普通高危: decline + 告警
-       紧急(服务critical+未冷却+次数未超限): 执行预定义剧本 + 事后告警 + 计数
-       紧急未奏效: 停手 + 升级人工
-```
-
-### 15.4 提问回看（用户驱动）
-
-```
-web发起 -> spawn question子session
-  -> 查DB历史(incidents/sessions) + KB检索(sqlite-vec)
-  -> LLM总结 -> 回前端 + 记session_events
-```
+- **No LangGraph or heavy frameworks**: Hand-written ReAct orchestrator is more controllable, easier to explain to judges, and more resource-efficient
+- **No separate framework for sub-agents**: = same server, independent context; a logical concept, resource-neutral
+- **No DAG framework**: Planner produces a dependency-ordered operation step graph; executor runs in topological order — ~50 lines of Python
 
 ---
 
-## 16. 数据模型（SQLite 表结构）
+## 15. Core Data Flows
+
+### 15.1 Inspection Loop (Periodic, e.g., 5min)
+
+```
+Master timer fires → spawn inspection sub-session (fresh context)
+  → Read DB last state card + MCP call get_metrics/get_alerts
+  → LLM inference (streaming tokens via WS to frontend)
+  → Conclusion to DB (new state card + session_events) + summary back to master
+  → Context released
+```
+
+### 15.2 Alert Repair (Event-Driven, Preempts Inspection)
+
+```
+Alertmanager webhook → Orchestrator → master pauses inspection (save state)
+  → spawn repair sub-session (fresh context: incident KB retrieval + full toolset)
+  → LLM ReAct loop: diagnose → call tool → observe → ...
+  → Encounter high-risk op: go to 15.3 approval
+  → Execute repair → result to DB → summary back to master → resume inspection
+```
+
+### 15.3 Approval Flow (with Timeout / Emergency Override)
+
+```
+Sub-session requests high-risk op → approval service records to DB (pending) + WS push to frontend
+  → Human approves ────────────────────→ execute/decline, write audit
+  → Timeout (10min) → rule decides:
+       Normal high-risk: decline + alert
+       Emergency (service critical + not in cooldown + under attempt limit): execute predefined playbook + post-alert + count
+       Emergency ineffective: stop + escalate to human
+```
+
+### 15.4 Query Replay (User-Driven)
+
+```
+Web initiates → spawn question sub-session
+  → Query DB history (incidents/sessions) + KB retrieval (sqlite-vec)
+  → LLM summarize → return to frontend + record to session_events
+```
+
+---
+
+## 16. Data Model (SQLite Schema)
 
 ```sql
--- 子session 记录
+-- Sub-session record
 sessions(
   id            TEXT PRIMARY KEY,
-  parent_id     TEXT,                 -- master 或父 session
+  parent_id     TEXT,                 -- master or parent session
   type          TEXT,                 -- inspect / fix / question
   trigger       TEXT,                 -- cron / alert_id / user_query
   status        TEXT,                 -- running / done / failed / aborted
-  summary       TEXT,                 -- 跑完回传 master 的摘要
+  summary       TEXT,                 -- post-run summary returned to master
   started_at    INTEGER,
   ended_at      INTEGER
 );
 
--- session 内事件（ReAct 时间线，web 回看用）
+-- Events within a session (ReAct timeline, for web replay)
 session_events(
   id            INTEGER PRIMARY KEY,
   session_id    TEXT,
-  seq           INTEGER,              -- 序号
+  seq           INTEGER,              -- sequence number
   kind          TEXT,                 -- thought / tool_call / tool_result / llm_msg / approval
-  content_json  TEXT,                 -- 结构化内容
+  content_json  TEXT,                 -- structured content
   ts            INTEGER
 );
 
--- 事件/incident
+-- Incident
 incidents(
   id            TEXT PRIMARY KEY,
-  alert_payload TEXT,                 -- Alertmanager 原始告警
+  alert_payload TEXT,                 -- raw Alertmanager alert
   status        TEXT,                 -- active / resolved / escalated
-  linked_session_ids TEXT,            -- 关联的修复 session
+  linked_session_ids TEXT,            -- associated repair sessions
   resolution    TEXT,
   created_at    INTEGER,
   updated_at    INTEGER
 );
 
--- 审批
+-- Approval
 approvals(
   id            TEXT PRIMARY KEY,
   session_id    TEXT,
-  operation     TEXT,                 -- 请求的操作
+  operation     TEXT,                 -- requested operation
   risk_level    TEXT,                 -- medium / high / destructive
   status        TEXT,                 -- pending / approved / declined / timeout_override
   requested_at  INTEGER,
@@ -699,7 +699,7 @@ approvals(
   decision_note TEXT
 );
 
--- 审计日志（追加）
+-- Audit log (append-only)
 audit(
   id            INTEGER PRIMARY KEY,
   session_id    TEXT,
@@ -711,10 +711,10 @@ audit(
   ts            INTEGER
 );
 
--- 全局状态卡（master 持有的最新集群健康快照）
+-- Global state card (latest cluster health snapshot held by master)
 cluster_state(
   id            INTEGER PRIMARY KEY,
-  snapshot_json TEXT,                 -- 当前健康度/活跃事件/待审批
+  snapshot_json TEXT,                 -- current health/active incidents/pending approvals
   updated_at    INTEGER
 );
 
@@ -723,159 +723,127 @@ runbooks(
   id            TEXT PRIMARY KEY,
   title         TEXT,
   content       TEXT,
-  source        TEXT,                 -- manual / agent_generated(待审核)
+  source        TEXT,                 -- manual / agent_generated (pending review)
   status        TEXT,                 -- approved / pending_review
-  embedding     BLOB,                 -- sqlite-vec 向量
+  embedding     BLOB,                 -- sqlite-vec vector
   created_at    INTEGER
 );
 ```
 
 ---
 
-## 17. 故障剧本（演示用）
+## 17. Fault Scenarios (for Demo)
 
-每个剧本跑通"诊断 -> 修复"闭环。建议至少覆盖：
+Each scenario runs through the "diagnosis → repair" closed loop. Recommended coverage:
 
-1. **HDFS DataNode 掉线**：心跳丢失 -> 定位 -> 重启 DataNode
-2. **YARN NodeManager OOM**：GC overhead -> 定位 -> 调内存参数/重启
-3. **HBase RegionServer 崩溃**：进程退出 -> 定位 -> 重启
-4. **磁盘满**：日志/数据盘满 -> 清理/扩容
-5. **Hive 慢查询**：查询卡住 -> 分析执行计划 -> kill/调参
+1. **HDFS DataNode Offline**: Heartbeat lost → locate → restart DataNode
+2. **YARN NodeManager OOM**: GC overhead → locate → tune memory params / restart
+3. **HBase RegionServer Crash**: Process exit → locate → restart
+4. **Disk Full**: Log/data disk full → clean / expand
+5. **Hive Slow Query**: Query stuck → analyze execution plan → kill / tune params
 
-每个剧本在 docker-compose 环境中可注入触发（kill 进程 / 填满磁盘 / 改坏配置），供演示与评委复现。
+Each scenario can be injected in the docker-compose environment (kill process / fill disk / break config) for demo and judge reproducibility.
 
-> **实探补充**：Hive MetaStore 可作为天然 Demo 故障点——将 JVM 堆配为仅 50MB（`-Xmx52428800`，官方建议 ≥256MB），任何中等 Hive 查询都会触发 Full GC/OOM，无需人为破坏即可复现"MetaStore OOM → Agent 诊断 → 调堆参 → 重启 → 验证 → 回写 runbook"完整闭环。
-
----
-
-## 18. 开发顺序与里程碑
-
-**原则：先 agent 核心闭环（console+日志验证），再包 web UI。别先做 UI 后做 agent。**
-
-### M1 - 推理基座（先跑通模型）✅ 已完成
-- [x] llama.cpp ROCm/HIPBLAS 编译验证（ldd 确认 ROCm 库）
-- [x] Qwen 27B Q4_K_M + KV **q8_0** + FA(`-fa on`) + mmap + prompt-cache 跑通
-- [x] tool-calling 格式验证（实测返回 `tool_calls`）
-- [x] 性能基线测量：生成 26 t/s、prompt 50 t/s、VRAM 21.7GB/51.5GB
-- [x] thinking 模型确认（`reasoning_content` 独立字段返回）
-
-### M2 - 工具层 + 单 session ReAct（console）✅ 已完成
-- [x] 工具层：SSH 真实实现，对接 docker-compose Hadoop 集群
-  - `get_service_status` → SSH 执行 jps/进程检查
-  - `get_alerts` → 遍历服务健康检查
-  - `get_metrics` → SSH 执行 free/df/top
-  - `read_logs` → SSH 读取远程日志，预压缩返回
-  - `search_kb` → 混合检索（向量+BM25）
-  - `restart_service` → SSH 重启已停止的服务（✅ 已验证修复成功）
-  - `hdfs_admin` → SSH 执行 dfsadmin/fsck/dfs 只读命令
-  - `edit_remote_config` → SSH 备份+改+reload
-- [x] 手写 ReAct 循环 + 单 session 跑通故障剧本（console+日志）
-- [x] docker-compose 3 节点 Hadoop + Prometheus + Grafana — **已交付**: HDFS HA(2NN+3DN+3JN+ZKFC) + YARN HA(2RM+3NM+JHS) + Hive(MR引擎) + HBase + ZK quorum + Prometheus + Grafana(4仪表盘) + SSH 免密
-
-### M3 - 编排层（master + 子session + 抢占）✅ 已完成
-- [x] Orchestrator 常驻 + master 纯规则调度
-- [x] session manager（spawn 用完即焚）
-- [x] /auto 巡检周期 loop + /fix 抢占（告警驱动抢占巡检）
-- [x] SQLite 落库（sessions/events/cluster_state）
-- [x] 上下文策略：一次性 context + DB 状态卡传递 + 工具输出预压缩
-- [x] 端到端验证（第一轮）：巡检 → 手动停 DataNode → 检测告警 → /fix 诊断修复（15 轮 ReAct, restart_service 因 JAVA_HOME 失败）
-- [x] 端到端验证（第二轮）：巡检 → 手动停 NameNode → 检测告警 → /fix 诊断（查日志SIGTERM→查KB→查指标排除OOM→查jps确认进程不在）→ restart_service CM API commands/start 启动 → hdfs_admin report 验证恢复 ✅ 完整闭环
-
-### M4 - 安全护栏 ✅ 已完成
-- [x] 风险分级: 低危(自动) / 中危(执行+通知) / 高危(dry-run+审批) / 破坏性(备份+审批)
-- [x] dry-run 预演: 高危操作先返回"会发生什么"而不真执行
-- [x] 审批门: 高危操作记录到 approvals 表, console 模式自动批准, web 模式等人工
-- [x] 审计日志: 所有工具调用写 audit_log 表 (session/tool/args/risk/status/result/ts)
-- [x] 熔断升级: 连续失败 >= 3 次自动熔断, 冷却期 5min, 后续操作升级人工
-- [x] 回滚机制: `edit_remote_config` 先 `cp .bak.<ts>` 备份再改再 reload，替换失败自动回滚（§5.4 已落地）
-
-### M5 - KB + 学习闭环 ✅ 已完成
-- [x] `runbooks` 表 + FTS5 全文索引 + 触发器同步；6 条种子 runbook
-- [x] `kb.py`：bge-small-zh 嵌入（CPU 懒加载）+ numpy 余弦向量检索 + BM25 混合检索，缺依赖自动降级
-- [x] `write_runbook` 回写（置信度门控 <0.7 拒绝 + pending_review）+ Web 审核流程
-- [x] `agent.py` 学习闭环：fix 修复成功后自动提示回写 runbook
-- [x] 测试 `tests/test_m5_kb.py`（DB/FTS/CRUD/write_runbook/审核/置信度门控）
-
-### M6 - Web 控制台 ✅ 已完成
-- [x] 后端 FastAPI: REST API (/api/sessions /api/approvals /api/audit /api/cluster/snapshot) + WebSocket (/ws 事件推送)
-- [x] 事件总线 EventBus: 线程安全 queue.Queue 桥接 agent 同步代码和 WebSocket 异步推送
-- [x] 前端 React + Vite + Ant Design (暗色主题):
-  - 登录页 (localStorage token)
-  - Sider 可收缩菜单 + Header (用户信息/通知 Badge/主题切换) + 面包屑
-  - Agent 活动台: Session 树 (master→auto/fix, 时间显示, LIVE Badge) + Timeline 事件流
-  - 事件渲染: Markdown (react-markdown + remark-gfm 表格) + 折叠 JSON (Collapse)
-  - 审批中心: Table (pending/decided 分组, 风险标签, 通过/拒绝按钮)
-  - 集群状态卡: 选中 master session 显示 Statistic + Descriptions 服务状态
-- [x] 流式输出: llm_client.chat_stream (SSE) + agent on_chunk 回调逐 token 推送到 WebSocket
-  - 前端实时拼接: stream_reasoning/stream_content 增量追加, 完整事件替换流式内容
-  - 首字延迟正常 (推理模型思考阶段)
-- [x] 智能滚动: scrollRef + atBottomRef, 用户在底部才自动滚动, 向上查看历史不打断
-- [x] 全中文 UI
-- [ ] 集群状态面板 (Grafana 仪表盘已配置 4 面板, Web iframe 嵌入待补)
-- [ ] 前端 admin 模板进一步美化
-
-### M7 - 演示与提交
-
-> 清单见 `docs/TODO.md` T9（含多故障剧本 / 录屏 / README 复现 / 性能数据）。
+> **Field Note**: Hive MetaStore serves as a natural demo fault point — configure JVM heap to only 50MB (`-Xmx52428800`, official recommendation ≥256MB); any moderate Hive query triggers Full GC/OOM, reproducing the full closed loop "MetaStore OOM → Agent diagnosis → tune heap → restart → verify → writeback runbook" without any manual sabotage.
 
 ---
 
-## 19. 开放问题（设计遗留决策）
+## 18. Development Order & Milestones
 
-> 实施类待办已统一移至 `docs/TODO.md`（含实施步骤、M7 演示清单、待敲定参数）。本节仅保留**设计层面的开放决策**，不再重复待办。
+**Principle: Agent core closed loop first (console + log validation), then wrap web UI. Don't build UI before agent.**
 
-| 项 | 状态 | 备注 |
+### M1 — Inference Foundation (Get model running) ✅ Completed
+- [x] llama.cpp ROCm/HIPBLAS compile verification (ldd confirms ROCm libs)
+- [x] Qwen 27B Q4_K_M + KV **q8_0** + FA(`-fa on`) + mmap + prompt-cache running
+- [x] Tool-calling format verification (returns `tool_calls`)
+- [x] Performance baseline: generation 26 t/s, prompt 50 t/s, VRAM 21.7GB/51.5GB
+- [x] Thinking model confirmed (`reasoning_content` as separate field)
+
+### M2 — Tool Layer + Single-session ReAct (console) ✅ Completed
+- [x] Tool layer: SSH real implementation, integrated with docker-compose Hadoop cluster
+  - `get_service_status` → SSH execute jps/process check
+  - `get_alerts` → iterate service health checks
+  - `get_metrics` → SSH execute free/df/top
+  - `read_logs` → SSH read remote logs, pre-compressed return
+  - `search_kb` → hybrid retrieval (vector + BM25)
+  - `restart_service` → SSH restart stopped service (✅ verified successful repair)
+  - `hdfs_admin` → SSH execute dfsadmin/fsck/dfs read-only commands
+  - `edit_remote_config` → SSH backup + modify + reload
+- [x] Hand-written ReAct loop + single session runs fault scenario (console + logs)
+- [x] docker-compose 3-node Hadoop + Prometheus + Grafana — **Delivered**: HDFS HA(2NN+3DN+3JN+ZKFC) + YARN HA(2RM+3NM+JHS) + Hive(MR engine) + HBase + ZK quorum + Prometheus + Grafana(4 dashboards) + SSH passwordless
+
+### M3 — Orchestration Layer (master + sub-sessions + preemption) ✅ Completed
+- [x] Orchestrator daemon + master pure-rule scheduler
+- [x] Session manager (spawn ephemeral)
+- [x] /auto inspection periodic loop + /fix preemption (alert-driven preempts inspection)
+- [x] SQLite persistence (sessions/events/cluster_state)
+- [x] Context strategy: one-shot context + DB state card passing + tool output pre-compression
+- [x] End-to-end validation (round 1): Inspection → manual stop DataNode → detect alert → /fix diagnosis repair (15 ReAct rounds, restart_service failed due to JAVA_HOME)
+- [x] End-to-end validation (round 2): Inspection → manual stop NameNode → detect alert → /fix diagnosis (check logs SIGTERM → check KB → check metrics exclude OOM → check jps confirm process gone) → restart_service CM API commands/start → hdfs_admin report verify recovery ✅ Full closed loop
+
+### M4 — Safety Guardrails ✅ Completed
+- [x] Risk grading: low (auto) / medium (execute+notify) / high (dry-run+approval) / destructive (backup+approval)
+- [x] Dry-run preview: high-risk ops first return "what would happen" without executing
+- [x] Approval gate: high-risk ops recorded to approvals table; console mode auto-approves, web mode waits for human
+- [x] Audit log: all tool calls written to audit_log table (session/tool/args/risk/status/result/ts)
+- [x] Circuit breaker escalation: consecutive failures ≥ 3 → auto-circuit-break, 5min cooldown, subsequent ops escalate to human
+- [x] Rollback mechanism: `edit_remote_config` first `cp .bak.<ts>` backup then modify then reload; auto-rollback on replacement failure (§5.4 implemented)
+
+### M5 — KB + Learning Closed Loop ✅ Completed
+- [x] `runbooks` table + FTS5 full-text index + trigger sync; 6 seed runbooks
+- [x] `kb.py`: bge-small-zh embedding (CPU lazy-load) + numpy cosine vector retrieval + BM25 hybrid retrieval; auto-degrades when deps missing
+- [x] `write_runbook` writeback (confidence gating <0.7 reject + pending_review) + Web review flow
+- [x] `agent.py` learning closed loop: after fix succeeds, auto-prompt runbook writeback
+- [x] Tests `tests/test_m5_kb.py` (DB/FTS/CRUD/write_runbook/review/confidence gating)
+
+### M6 — Web Console ✅ Completed
+- [x] Backend FastAPI: REST API (/api/sessions /api/approvals /api/audit /api/cluster/snapshot) + WebSocket (/ws event push)
+- [x] Event bus EventBus: thread-safe queue.Queue bridging agent sync code and WebSocket async push
+- [x] Frontend React + Vite + Ant Design (dark theme):
+  - Login page (localStorage token)
+  - Sider collapsible menu + Header (user info/notification Badge/theme toggle) + Breadcrumb
+  - Agent Activity: Session tree (master→auto/fix, time display, LIVE Badge) + Timeline event stream
+  - Event rendering: Markdown (react-markdown + remark-gfm tables) + collapsible JSON (Collapse)
+  - Approval Center: Table (pending/decided grouped, risk tags, approve/reject buttons)
+  - Cluster Status card: selected master session shows Statistic + Descriptions service status
+- [x] Streaming output: llm_client.chat_stream (SSE) + agent on_chunk callback pushes tokens to WebSocket
+  - Frontend real-time assembly: stream_reasoning/stream_content incremental append, complete event replaces stream content
+  - First-token latency normal (thinking model reasoning phase)
+- [x] Smart scrolling: scrollRef + atBottomRef; auto-scroll only when user at bottom; scrolling up to view history doesn't interrupt
+- [x] Full Chinese UI
+> Pending items (Grafana iframe embedding, frontend beautification) tracked in `docs/TODO.md` M6.
+
+### M7 — Demo & Submission
+
+> Checklist in `docs/TODO.md` M7 (includes multi-fault scenarios / screen recording / README reproduction / performance data).
+
+---
+
+## 19. Open Questions (Design Decisions)
+
+> Implementation TODOs have been consolidated into `docs/TODO.md` (including implementation steps, M7 demo checklist, pending parameters). This section retains only **design-level open decisions**; no duplicate TODOs.
+
+| Item | Status | Notes |
 |---|---|---|
-| MTP 是否被 llama.cpp 支持 | ✅ 已启用 | `--spec-type draft-mtp --spec-draft-n-max 1`。基准测试 (n_max=1~8)：n_max=1 最优 37.5 t/s (+30% vs baseline 28.9 t/s)，接受率 77.4%。n_max 越大接受率衰减越快 (n_max=8 仅 24%)，最优值为 1 |
-| 模型确切型号与官方 GGUF | ✅ 已确认 | `Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf`，27B 稠密 + tool-calling 可用 |
-| thinking 模型处理 | ✅ 已确认 | `reasoning_content` 独立字段，agent 直接读，无需解析 `<think>` |
-| 紧急覆盖阈值/次数/冷却 | ✅ 已由 §5 解决 | attempt 节流（按 `(tool,target)` 查 audit_log，超限升级人工）；具体数值见 TODO 待敲定 |
-| KB 检索最终用向量还是 BM25 | ✅ 已定 | 混合检索：向量 top-k + BM25 top-k 合并去重，向量优先；缺 bge 自动降级 BM25 (M5 已完成) |
-| 审批超时 / 巡检周期 / `-t` 线程 | 暂定 | 10min / 5min / 16，均可调（见 TODO 待敲定） |
-| restart_service 启动失败 | ✅ 已修复 | SSH 重启，不依赖 JAVA_HOME |
-| 集群环境 | ✅ docker-compose 已交付 | 3 节点 Hadoop HA + Prometheus + Grafana + SSH，Docker Bridge 10.20.0.0/24 |
+| Is MTP supported by llama.cpp | ✅ Enabled | `--spec-type draft-mtp --spec-draft-n-max 1`. Benchmark (n_max=1~8): n_max=1 optimal 37.5 t/s (+30% vs baseline 28.9 t/s), acceptance rate 77.4%. Larger n_max → faster acceptance decay (n_max=8 only 24%); optimal value is 1 |
+| Exact model & official GGUF | ✅ Confirmed | `Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf`, 27B dense + tool-calling works |
+| Thinking model handling | ✅ Confirmed | `reasoning_content` as separate field; agent reads directly, no `<think>` parsing needed |
+| Emergency override thresholds/count/cooldown | ✅ Resolved in §5 | Attempt throttling (per `(tool,target)` query audit_log, over-limit escalates to human); specific values in TODO pending |
+| KB retrieval: vector or BM25 | ✅ Decided | Hybrid retrieval: vector top-k + BM25 top-k merge dedup, vector-first; auto-degrades to BM25 when bge missing (M5 completed) |
+| Approval timeout / inspection period / `-t` threads | Tentative | 10min / 5min / 16, all adjustable (see TODO pending) |
+| restart_service startup failure | ✅ Fixed | SSH restart, does not depend on JAVA_HOME |
+| Cluster environment | ✅ docker-compose delivered | 3-node Hadoop HA + Prometheus + Grafana + SSH, Docker Bridge 10.20.0.0/24 |
 
 ---
 
-## 20. 待实现的特性
+## Appendix: Key Constraints Memo
 
-> 以下为锦上添花特性，按需实现。详细说明见 `docs/TODO.md` 锦上添花章节。
-
-- [ ] **OpenAI 兼容端点备选** — 远程 llama-server 不可用时，可配置 OpenAI 格式的 `base_url` + `api_key`（如 DeepSeek / 智谱 / vLLM 等）作为推理后端兜底。`llm_client.py` 加 `provider` 分支，环境变量 `LLM_PROVIDER` / `LLM_API_KEY` / `LLM_BASE_URL` 切换，启动时探测连通性自动 failover
-- [ ] **对话式运维 Chat Mode** — Web 加聊天框，自然语言提问集群状态，复用 `ReActAgent`（只读工具）+ EventBus+WebSocket
-- [ ] **告警聚合去重** — 对同服务多告警合并为一个 fix 任务，避免重复 fix
-- [ ] **健康总览 Dashboard** — Web 首页展示服务状态卡/活跃告警/最近 fix/autonomy 徽章
-- [ ] **审批实时推送** — 新审批请求经 WebSocket 推浏览器通知，Sider 审批项加数字 Badge
-- [ ] **Agent 进度提示** — 会话卡片显示"迭代 N/15"+已耗时
-- [ ] **工具结果友好渲染** — `read_logs` 错误行红/警告行黄高亮；`get_metrics` 用数值卡片替代原始 JSON
-- [ ] **一键 Demo 脚本** — `scripts/demo.sh`：启动→注入故障→触发 fix→展示控制台，供评委复现
-- [ ] **控制平面 Dockerfile + compose** — Python 后端 / React 前端(nginx) / 整体编排
-- [ ] **`/health` 端点** — 返回状态 + LLM 可达性，供 Docker healthcheck
-- [ ] **`requirements` 固定版本** — `pip freeze` 或 `pyproject.toml + uv lock`
-- [ ] **前端 API 地址可配** — Vite `import.meta.env.VITE_API_URL`
-- [ ] **Web 默认鉴权** — `CONSOLE_TOKEN` 空时默认生成随机 token
-- [ ] **工具入参 Pydantic 校验** — 类型/长度/正则，guardrail 层二次校验
-- [ ] **`edit_remote_config` 配置语法校验** — 替换后 `xmllint --noout` 校验 XML
-- [ ] **API 速率限制** — `slowapi` 对写操作限流
-- [ ] **统一 logging** — 替换散落的 `print()`，标准 `logging` 分级
-- [ ] **ReAct 上下文预算** — 追踪 `usage`，剩余窗口低于阈值时提前收尾/滑窗压缩
-- [ ] **一键回滚工具** — `rollback_config` 找 `.bak.<ts>` 最新备份恢复
-- [ ] **事后报告自动生成** — fix 结束生成 Markdown post-mortem
-- [ ] **时序指标趋势图** — SQLite 时序表记录 `get_metrics`，前端 24h 趋势折线
-- [ ] **Runbook 版本 Diff** — 更新保留历史版本，UI 查看 diff
-- [ ] **并行 Fix 会话** — 同类型服务 fix 并行，同服务操作服务粒度锁串行
-- [ ] **Prometheus 指标导出** — FastAPI `/metrics`（`prometheus-fastapi-instrumentator`）
-
----
-
-## 附录：关键约束备忘
-
-- **双环境：主=远程 AMD 云 W7900D 48GB + EPYC 9334 128 线程；兜底=本地 7900XTX 24GB + 32GB RAM**
-- 主环境 VRAM 21.7GB/51.5GB 余量足，KV q8_0；兜底 24GB 紧，KV q4_0 + 上下文降 64k
-- GPU 只给 llama-server，其余组件全 CPU
-- 单 GPU 无法真并行 -> /fix 抢占 /auto，串行（-np 1）
-- 常态上下文目标 16-32k，128k 仅罕见深诊断（仅主环境支持）
-- 稳定性 > 微小提速（不开超频）
-- thinking 模型：`reasoning_content` 独立字段，agent 直接读取
-- 可复现性：docker-compose + 录屏 + README（评委进不了局域网）
-- 主环境持久存储：`/workspace` 20G 持久卷（放模型），overlay 根非持久
+- **Dual environment**: Primary = remote AMD cloud W7900D 48GB + EPYC 9334 128 threads; Fallback = local 7900 XTX 24GB + 32GB RAM
+- Primary env VRAM 21.7GB/51.5GB with ample headroom, KV q8_0; Fallback 24GB tight, KV q4_0 + context reduced to 64k
+- GPU dedicated to llama-server; all other components on CPU
+- Single GPU cannot truly parallelize → /fix preempts /auto, serial (`-np 1`)
+- Normal context target 16–32k; 128k only for rare deep diagnosis (primary env only)
+- Stability > marginal speedup (no overclocking)
+- Thinking model: `reasoning_content` as separate field; agent reads directly
+- Reproducibility: docker-compose + screen recording + README (judges cannot access LAN)
+- Primary env persistent storage: `/workspace` 20G persistent volume (holds model); overlay root is non-persistent

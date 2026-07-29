@@ -74,14 +74,15 @@
 - [x] 流式输出: SSE + WebSocket 逐 token 推送
 - [x] 智能滚动: 用户在底部才自动滚动, 向上查看历史不打断
 - [ ] Web 前端 Grafana 跳转链接（仪表盘已配置，Web 入口待加）
+- [ ] 前端 admin 模板进一步美化
 
 ## M7 — 演示与提交
 
-- [ ] 多故障剧本跑通（DataNode 掉线 / NameNode SIGTERM / 磁盘满 / MetaStore OOM）
-- [ ] 端到端录屏
-- [ ] README 复现步骤 + 架构图
+- [x] 多故障剧本跑通（DataNode 掉线 / NameNode SIGTERM / 磁盘满 / MetaStore OOM）
+- [x] 端到端录屏
+- [x] DESIGN.md 英文化（英文作默认主文件，中文保留 `DESIGN_ZH.md`）
+- [ ] **README 复现步骤 + 架构图** ← 当前冲刺目标（实现全云部署，方便评委复现）
 - [ ] 性能数据整理（tokens/s、TTFT、VRAM、故障解决耗时）
-- [ ] DESIGN.md 英文化（英文作默认主文件，中文保留 `DESIGN_ZH.md`）
 - [ ] 文档交叉引用最终核对
 
 ## 缺陷修复（评审发现并已修）
@@ -106,7 +107,7 @@
 
 ### Agent 能力增强
 
-- [ ] **对话式运维 Chat Mode** — Web 加聊天输入框，用户自然语言提问（如"HBase 为什么慢？""上次 DataNode 掉线怎么修的？"），复用 `ReActAgent` 但限制为只读工具集 + KB 检索，经 EventBus + WebSocket 流式返回。区别于 /fix 的自动修复，这是人机交互模式
+- [x] **对话式运维 Chat Mode** — 已实现：`ChatConsole.tsx` 前端组件 + `/api/chat/sessions` CRUD + `chat_messages`/`chat_sessions` DB 表 + orchestrator 轮询 pending 消息 + `ReActAgent` chat 模式（全工具集 + 多轮历史）+ WebSocket 流式推送
 - [ ] **告警聚合去重** — Alertmanager 短时间内对同一服务发多条告警（如 DataNode 重启时先 DOWN 再恢复又 GC 告警），当前每条都 spawn 一个 fix session 导致重复操作。加窗口聚合：同 `(service, node)` 在 60s 内的告警合并为一个 fix 任务，附告警时间线
 - [ ] **ReAct 上下文预算** — 追踪每次 LLM 调用返回的 `usage`（prompt_tokens + completion_tokens），累计后与上下文窗口上限比较。剩余窗口低于阈值（如 4k）时主动触发摘要压缩或提前收尾，避免 context 溢出被 llama.cpp 截断导致推理质量骤降
 - [ ] **并行 Fix 会话** — 当前单 GPU 串行（-np 1），但如果两条告警涉及不同服务（如 HDFS DataNode + HBase RegionServer），可并行 spawn 两个 fix session。同服务的操作加服务粒度锁串行，避免配置冲突。需确保 `audit_log` 和 `risk_rules` 并发安全
@@ -115,7 +116,7 @@
 ### Web 前端增强
 
 - [ ] **健康总览 Dashboard** — Web 首页（登录后落地页）展示：服务状态卡（绿/黄/红）、活跃告警数、最近 5 次 fix 结果、当前 AUTONOMY 模式徽章。一屏掌握全局，不用点进 Agent 活动台才能看状态
-- [ ] **审批实时推送** — 新审批请求经 WebSocket 推浏览器，触发 `Notification API` 弹系统通知 + Sider 审批菜单项加数字 Badge。解决凌晨高危审批无人看到的问题（虽然 autonomous 模式有超时策略，但 supervised 模式下仍需及时提醒）
+- [ ] **审批实时推送** — 部分完成：Header 已有 `Badge count={pendingCount}`（10s 轮询）。待补：WebSocket 主动推送（替代轮询）+ `Notification API` 弹系统通知 + Sider 菜单项 Badge
 - [ ] **Agent 进度提示** — 会话卡片上显示"迭代 3/15"+ 已耗时（如 "2m30s"），让用户知道 agent 还在跑没卡死。上限 15 轮是 ReAct 循环的硬限制，进度条让等待过程可预期
 - [ ] **工具结果友好渲染** — `read_logs` 返回的文本按日志级别着色（ERROR 红 / WARN 黄 / INFO 默认）；`get_metrics` 的 JSON 用数值卡片展示（CPU 85% / MEM 12.3G / Disk 67%），替代当前的原始 JSON 折叠块
 - [ ] **Web 前端 Grafana 跳转链接** — 仪表盘已在 Grafana 配置好 4 个面板（Cluster / HDFS / YARN / HBase+ZK），Web 集群状态页加 4 个跳转按钮或 iframe 嵌入，用户不用单独开 Grafana 页面
@@ -123,7 +124,7 @@
 
 ### 工程规范与安全
 
-- [ ] **统一 logging** — 替换代码中散落的 `print()`，改用标准 `logging` 模块，按级别（DEBUG/INFO/WARNING/ERROR）分级输出，支持文件轮转。方便线上排障和演示时过滤噪音
+- [ ] **统一 logging** — 部分完成：全部 7 个源文件已配置 `logging.getLogger(__name__)`。待补：orchestrator/agent/guardrails 仍有 ~25 个 `print()` 用于控制台 UX 输出，需替换为 logger + 文件轮转
 - [ ] **工具入参 Pydantic 校验** — 每个工具的入参用 Pydantic model 定义类型/长度/正则约束（如 `service` 枚举值、`node` IP 格式、`tail_n` 上限 5000），guardrail 层二次校验。防止模型幻觉出非法参数导致 SSH 执行异常命令
 - [ ] **`edit_remote_config` XML 语法校验** — 配置文件改完后用 `xmllint --noout` 校验 XML 合法性，校验失败自动回滚备份。防止改出语法错误的配置导致服务重启失败
 - [ ] **一键回滚工具** — 新增 `rollback_config(node, file)` 工具，找 `.bak.<ts>` 最新备份恢复。当 `edit_remote_config` 改完后服务起不来，agent 可自动调回滚工具恢复，不用人工 SSH 进去手动 cp
