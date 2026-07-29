@@ -23,7 +23,9 @@ beeline () {
   export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
   export PATH=$JAVA_HOME/bin:$PATH
   
-  # Java 21 需要的 --add-opens 选项
+  # Java 21 需要的 --enable-preview (JLine FFM terminal) + --add-opens 选项
+  # 直接追加到 HADOOP_OPTS (确保 hadoop jar 能拾取)
+  export HADOOP_OPTS="$HADOOP_OPTS --enable-preview --enable-native-access=ALL-UNNAMED"
   export HADOOP_CLIENT_OPTS="$HADOOP_CLIENT_OPTS -Dlog4j.configurationFile=beeline-log4j2.properties --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/java.net=ALL-UNNAMED --add-opens java.base/java.lang=ALL-UNNAMED  --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.util.concurrent=ALL-UNNAMED --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens java.base/java.util.regex=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.base/java.io=ALL-UNNAMED "
 
   if [ "$EXECUTE_WITH_JAVA" != "true" ] ; then

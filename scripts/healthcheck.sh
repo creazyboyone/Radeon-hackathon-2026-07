@@ -1,17 +1,17 @@
 #!/bin/bash
 # ============================================================
-# Hadoop Cluster Health Check Script (Git Bash)
+# Hadoop Cluster Health Check Script (Docker 3-node HA / 单节点直装)
 # Usage: bash scripts/healthcheck.sh
 # ============================================================
 
 # Note: set -e is intentionally omitted so a single failed check
 # does not abort the entire script.
 
-NODES=(hadoop01 hadoop02 hadoop03)
-
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m'
 
 FAILED=0
@@ -20,35 +20,99 @@ check_pass() { echo -e "${GREEN}[PASS]${NC} $1"; }
 check_fail() { echo -e "${RED}[FAIL]${NC} $1"; FAILED=1; }
 check_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
+# ============================================================
+# 检测集群模式: Docker (docker exec) 或 直装 (supervisorctl)
+# ============================================================
+SUPCTL="supervisorctl -c /etc/supervisor/conf.d/supervisord-hadoop01.conf"
+
+if docker exec hadoop01 echo OK >/dev/null 2>&1; then
+  MODE="docker"
+  NODES=(hadoop01 hadoop02 hadoop03)
+  EXPECTED_DN=3
+elif bash -c "$SUPCTL status" >/dev/null 2>&1; then
+  MODE="direct"
+  NODES=(localhost)
+  EXPECTED_DN=1
+else
+  echo -e "${RED}[ERROR]${NC} Hadoop 集群未运行 (Docker 和直装均未检测到)"
+  exit 1
+fi
+
 echo "============================================================"
 echo "  Hadoop Cluster Health Check"
+echo "  Mode: $MODE"
 echo "  Time: $(date)"
 echo "============================================================"
 echo ""
 
+# ============================================================
+# 集群操作封装 (与 demo.sh 一致)
+# ============================================================
+cluster_exec() {
+  local node="$1"; shift
+  if [ "$MODE" = "docker" ]; then
+    docker exec "$node" "$@"
+  else
+    "$@"
+  fi
+}
+
+get_jps() {
+  local node="$1"
+  if [ "$MODE" = "docker" ]; then
+    docker exec "$node" jps 2>/dev/null
+  else
+    /usr/bin/jps 2>/dev/null
+  fi
+}
+
+get_hdfs_report() {
+  if [ "$MODE" = "docker" ]; then
+    docker exec hadoop01 bash -c 'export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64; /opt/hadoop/bin/hdfs dfsadmin -report 2>/dev/null'
+  else
+    /opt/hadoop/bin/hdfs dfsadmin -report 2>/dev/null
+  fi
+}
+
+# ============================================================
+# 逐节点检查
+# ============================================================
 for node in "${NODES[@]}"; do
   echo ">>> Node: $node"
   echo ""
 
-  # Container check
-  if ! docker exec "$node" echo OK 2>/dev/null | grep -q OK; then
-    check_fail "Container not running"
-    echo ""
-    continue
+  # 容器/进程检查
+  if [ "$MODE" = "docker" ]; then
+    if ! docker exec "$node" echo OK 2>/dev/null | grep -q OK; then
+      check_fail "Container not running"
+      echo ""
+      continue
+    fi
+    check_pass "Container running"
+  else
+    check_pass "Direct install (localhost)"
   fi
-  check_pass "Container running"
 
-  # Java processes
-  JPS=$(docker exec "$node" jps 2>/dev/null)
-  case $node in
+  # Java 进程检查 (Docker 按节点角色, 直装检查全部)
+  JPS=$(get_jps "$node")
+  case "$node" in
     hadoop01)
       for proc in NameNode DataNode JournalNode ResourceManager NodeManager JobHistoryServer HMaster HRegionServer QuorumPeerMain DFSZKFailoverController; do
         if echo "$JPS" | grep -q "$proc"; then check_pass "Process: $proc"; else check_fail "Process: $proc"; fi
+      done
+      # Docker hadoop01 也可能有 Hive
+      for proc in RunJar; do
+        COUNT=$(echo "$JPS" | grep -c "$proc" || true)
+        if [ "$COUNT" -ge 2 ]; then check_pass "Process: Hive (MetaStore+Server2)"; else check_warn "Process: Hive (expected 2 RunJar, got $COUNT)"; fi
       done
       ;;
     hadoop02)
       for proc in NameNode DataNode JournalNode ResourceManager NodeManager HMaster HRegionServer QuorumPeerMain DFSZKFailoverController; do
         if echo "$JPS" | grep -q "$proc"; then check_pass "Process: $proc"; else check_fail "Process: $proc"; fi
+      done
+      for proc in RunJar; do
+        COUNT=$(echo "$JPS" | grep -c "$proc" || true)
+        if [ "$COUNT" -ge 2 ]; then check_pass "Process: Hive (MetaStore+Server2)"; else check_warn "Process: Hive (expected 2 RunJar, got $COUNT)"; fi
       done
       ;;
     hadoop03)
@@ -56,13 +120,26 @@ for node in "${NODES[@]}"; do
         if echo "$JPS" | grep -q "$proc"; then check_pass "Process: $proc"; else check_fail "Process: $proc"; fi
       done
       ;;
+    localhost)
+      # 直装单节点: 所有进程都在一个节点
+      for proc in NameNode DataNode ResourceManager NodeManager JobHistoryServer HMaster HRegionServer QuorumPeerMain; do
+        if echo "$JPS" | grep -q "$proc"; then check_pass "Process: $proc"; else check_fail "Process: $proc"; fi
+      done
+      # Hive (RunJar x2: MetaStore + Server2)
+      RUNJAR_COUNT=$(echo "$JPS" | grep -c "RunJar" || true)
+      if [ "$RUNJAR_COUNT" -ge 2 ]; then
+        check_pass "Process: Hive (MetaStore+Server2)"
+      else
+        check_warn "Process: Hive (expected 2 RunJar, got $RUNJAR_COUNT)"
+      fi
+      ;;
   esac
   echo ""
 
-  # HBase (only check Master status on nodes running HMaster; hadoop03 only has RegionServer)
-  if [ "$node" = "hadoop01" ] || [ "$node" = "hadoop02" ]; then
+  # HBase Master (hadoop01/02 或 localhost)
+  if [ "$node" = "hadoop01" ] || [ "$node" = "hadoop02" ] || [ "$node" = "localhost" ]; then
     echo "  [HBase]"
-    HBASE=$(docker exec "$node" curl -s http://localhost:16010/jmx 2>/dev/null)
+    HBASE=$(cluster_exec "$node" curl -s http://localhost:16010/jmx 2>/dev/null)
     if echo "$HBASE" | grep -q "tag.isActiveMaster"; then
       IS_ACTIVE=$(echo "$HBASE" | grep "tag.isActiveMaster" | head -1 | grep -o "true\|false")
       if [ "$IS_ACTIVE" = "true" ]; then check_pass "Master: ACTIVE"; else check_pass "Master: STANDBY"; fi
@@ -72,20 +149,20 @@ for node in "${NODES[@]}"; do
     echo ""
   fi
 
-  # ZooKeeper (use nc -z to check port, avoids zkCli.sh localhost resolution issue in Git Bash)
+  # ZooKeeper
   echo "  [ZooKeeper]"
-  if docker exec "$node" nc -z localhost 2181 2>/dev/null; then
+  if cluster_exec "$node" nc -z localhost 2181 2>/dev/null; then
     check_pass "Port 2181 reachable"
   else
     check_fail "Port 2181 unreachable"
   fi
   echo ""
 
-  # Hive (hadoop01/02)
-  if [ "$node" = "hadoop01" ] || [ "$node" = "hadoop02" ]; then
+  # Hive (hadoop01/02 或 localhost)
+  if [ "$node" = "hadoop01" ] || [ "$node" = "hadoop02" ] || [ "$node" = "localhost" ]; then
     echo "  [Hive]"
-    if docker exec "$node" nc -z localhost 10000 2>/dev/null; then check_pass "HiveServer2"; else check_fail "HiveServer2"; fi
-    if docker exec "$node" nc -z localhost 9083 2>/dev/null; then check_pass "MetaStore"; else check_fail "MetaStore"; fi
+    if cluster_exec "$node" nc -z localhost 10000 2>/dev/null; then check_pass "HiveServer2 (10000)"; else check_fail "HiveServer2 (10000)"; fi
+    if cluster_exec "$node" nc -z localhost 9083 2>/dev/null; then check_pass "MetaStore (9083)"; else check_fail "MetaStore (9083)"; fi
     echo ""
   fi
 
@@ -93,40 +170,119 @@ for node in "${NODES[@]}"; do
   echo ""
 done
 
-# Cluster-level checks (via hadoop01)
-echo ">>> Cluster-level checks (hadoop01)"
+# ============================================================
+# 集群级检查
+# ============================================================
+echo ">>> Cluster-level checks"
 echo ""
 
+# HDFS
 echo "  [HDFS]"
-REPORT=$(docker exec hadoop01 hdfs dfsadmin -report 2>/dev/null)
+REPORT=$(get_hdfs_report)
 LIVE=$(echo "$REPORT" | grep -o "Live datanodes ([0-9]*)" | grep -o "[0-9]*")
 LIVE=${LIVE:-0}
-if [ "$LIVE" -eq 3 ]; then check_pass "DataNode: 3/3"; else check_fail "DataNode: $LIVE/3"; fi
+if [ "$LIVE" -eq "$EXPECTED_DN" ]; then check_pass "DataNode: $LIVE/$EXPECTED_DN"; else check_fail "DataNode: $LIVE/$EXPECTED_DN"; fi
 MISSING=$(echo "$REPORT" | grep "Missing blocks:" | head -1 | awk '{print $3}')
 MISSING=${MISSING:-0}
 if [ "$MISSING" -eq 0 ]; then check_pass "Missing blocks: 0"; else check_warn "Missing blocks: $MISSING"; fi
+
+# 读写测试
 TEST="/tmp/hc_$(date +%s).txt"
-if docker exec hadoop01 bash -c "echo test | hdfs dfs -put - $TEST && hdfs dfs -cat $TEST && hdfs dfs -rm $TEST" 2>/dev/null | grep -q test; then
-  check_pass "Read/write test"
+if [ "$MODE" = "docker" ]; then
+  if docker exec hadoop01 bash -c "echo test | hdfs dfs -put - $TEST && hdfs dfs -cat $TEST && hdfs dfs -rm $TEST" 2>/dev/null | grep -q test; then
+    check_pass "Read/write test"
+  else
+    check_fail "Read/write test"
+  fi
 else
-  check_fail "Read/write test"
+  if bash -c "echo test | /opt/hadoop/bin/hdfs dfs -put - $TEST && /opt/hadoop/bin/hdfs dfs -cat $TEST && /opt/hadoop/bin/hdfs dfs -rm $TEST" 2>/dev/null | grep -q test; then
+    check_pass "Read/write test"
+  else
+    check_fail "Read/write test"
+  fi
 fi
 echo ""
 
+# YARN
 echo "  [YARN]"
-# grep -c exits with code 1 when no match but still prints 0; do not use || echo "0"
-NODES_COUNT=$(docker exec hadoop01 yarn node -list 2>/dev/null | grep -c RUNNING)
+if [ "$MODE" = "docker" ]; then
+  NODES_COUNT=$(docker exec hadoop01 yarn node -list 2>/dev/null | grep -c RUNNING)
+else
+  NODES_COUNT=$(/opt/hadoop/bin/yarn node -list 2>/dev/null | grep -c RUNNING)
+fi
 NODES_COUNT=${NODES_COUNT:-0}
-if [ "$NODES_COUNT" -eq 3 ]; then check_pass "NodeManager: $NODES_COUNT RUNNING"; else check_fail "NodeManager: $NODES_COUNT/3"; fi
-NN1=$(docker exec hadoop01 hdfs haadmin -getServiceState nn1 2>/dev/null || echo "unknown")
-NN2=$(docker exec hadoop01 hdfs haadmin -getServiceState nn2 2>/dev/null || echo "unknown")
-check_pass "NameNode HA: nn1=$NN1, nn2=$NN2"
-RM1=$(docker exec hadoop01 yarn rmadmin -getServiceState rm1 2>/dev/null || echo "unknown")
-RM2=$(docker exec hadoop01 yarn rmadmin -getServiceState rm2 2>/dev/null || echo "unknown")
-check_pass "ResourceManager HA: rm1=$RM1, rm2=$RM2"
+if [ "$NODES_COUNT" -eq "$EXPECTED_DN" ]; then
+  check_pass "NodeManager: $NODES_COUNT RUNNING"
+else
+  check_fail "NodeManager: $NODES_COUNT/$EXPECTED_DN"
+fi
+
+# HA 状态检查 (仅 Docker 模式)
+if [ "$MODE" = "docker" ]; then
+  NN1=$(docker exec hadoop01 hdfs haadmin -getServiceState nn1 2>/dev/null || echo "unknown")
+  NN2=$(docker exec hadoop01 hdfs haadmin -getServiceState nn2 2>/dev/null || echo "unknown")
+  check_pass "NameNode HA: nn1=$NN1, nn2=$NN2"
+  RM1=$(docker exec hadoop01 yarn rmadmin -getServiceState rm1 2>/dev/null || echo "unknown")
+  RM2=$(docker exec hadoop01 yarn rmadmin -getServiceState rm2 2>/dev/null || echo "unknown")
+  check_pass "ResourceManager HA: rm1=$RM1, rm2=$RM2"
+else
+  check_pass "Single-node (no HA)"
+fi
 echo ""
 
-# Summary
+# JMX Exporter 端口 (直装模式额外检查)
+if [ "$MODE" = "direct" ]; then
+  echo "  [JMX Exporter]"
+  for pair in "10101:NameNode" "10102:DataNode" "10104:ResourceManager" "10105:NodeManager" "10106:HistoryServer" "10107:HMaster" "10108:RegionServer" "10109:ZooKeeper" "10110:HiveMetaStore" "10111:HiveServer2"; do
+    port="${pair%%:*}"
+    name="${pair##*:}"
+    if nc -z localhost "$port" 2>/dev/null; then
+      check_pass "$name ($port)"
+    else
+      check_fail "$name ($port)"
+    fi
+  done
+  echo ""
+fi
+
+# SSH 端口 (直装模式额外检查)
+if [ "$MODE" = "direct" ]; then
+  echo "  [SSH]"
+  for p in 22 2222 2223 2224; do
+    if nc -z localhost "$p" 2>/dev/null; then
+      check_pass "Port $p"
+    else
+      check_fail "Port $p"
+    fi
+  done
+  echo ""
+fi
+
+# 监控组件 (两种模式都检查)
+echo "  [Monitoring]"
+for pair in "9090:Prometheus" "3000:Grafana" "9093:Alertmanager"; do
+  port="${pair%%:*}"
+  name="${pair##*:}"
+  if [ "$MODE" = "docker" ]; then
+    # Docker 模式: 检查容器端口映射
+    if nc -z localhost "$port" 2>/dev/null; then
+      check_pass "$name ($port)"
+    else
+      check_warn "$name ($port) — may be on different port"
+    fi
+  else
+    if nc -z localhost "$port" 2>/dev/null; then
+      check_pass "$name ($port)"
+    else
+      check_fail "$name ($port)"
+    fi
+  fi
+done
+echo ""
+
+# ============================================================
+# 汇总
+# ============================================================
 echo "============================================================"
 if [ $FAILED -eq 0 ]; then
   echo -e "${GREEN}All checks passed!${NC}"

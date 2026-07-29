@@ -94,7 +94,7 @@ echo "===== Step 3/6: Hadoop 集群 ====="
 
 if [ "$CLUSTER_MODE" = "1" ]; then
   # ---- 本地单节点直装 ----
-  echo "  [本地单节点] 直装 Hadoop + ZK + HBase + supervisord ..."
+  echo "  [本地单节点] 直装 Hadoop + ZK + HBase + Hive + Tez + MySQL + supervisord ..."
   bash scripts/setup-hadoop-direct.sh
 else
   # ---- 远程 HA 集群 ----
