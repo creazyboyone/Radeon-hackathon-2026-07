@@ -298,6 +298,29 @@ class Store:
             )
             self.conn.commit()
 
+    def get_recent_session_summaries(self, limit: int = 5, minutes: int = 10) -> list:
+        """Get recent session summaries (auto + fix) within time window for inspection context."""
+        cutoff = int(time.time()) - minutes * 60
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id, type, trigger, summary, started_at, ended_at "
+                "FROM sessions WHERE type IN ('auto','fix') AND status='done' "
+                "AND started_at >= ? "
+                "ORDER BY started_at DESC LIMIT ?",
+                (cutoff, limit),
+            ).fetchall()
+        result = []
+        for r in rows:
+            result.append({
+                "id": r[0],
+                "type": r[1] or "",
+                "trigger": r[2] or "",
+                "summary": (r[3] or "")[:200],
+                "started_at": r[4],
+                "ended_at": r[5] or 0,
+            })
+        return result
+
     def save_state_card(self, snapshot: dict):
         with self._lock:
             self.conn.execute(

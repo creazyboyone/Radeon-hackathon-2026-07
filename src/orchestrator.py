@@ -116,9 +116,25 @@ class Orchestrator:
         自动触发 /fix 修复流程, 无需预编码告警规则.
         """
         state_card = self.store.get_latest_state_card()
-        prompt = "执行例行集群巡检。"
+        lang = get_lang()
+        if lang == "zh":
+            prompt = "执行例行集群巡检。"
+        else:
+            prompt = "Perform routine cluster inspection."
         if state_card:
-            prompt += f"\n上次巡检状态卡: {json.dumps(state_card, ensure_ascii=False)}"
+            label = "上次巡检状态卡" if lang == "zh" else "Last inspection state card"
+            prompt += f"\n{label}: {json.dumps(state_card, ensure_ascii=False)}"
+
+        # 注入最近 session 历史 (巡检+修复), 让 Agent 了解近期发生了什么
+        recent_sessions = self.store.get_recent_session_summaries(limit=5, minutes=10)
+        if recent_sessions:
+            if lang == "zh":
+                prompt += "\n\n近期 session 记录 (供参考, 了解集群近期状态变化):"
+            else:
+                prompt += "\n\nRecent session history (for reference, to understand recent cluster changes):"
+            for s in recent_sessions:
+                age = int(time.time()) - s["started_at"]
+                prompt += f"\n- [{s['type']}] {s['summary']} ({age}s ago)"
 
         agent = ReActAgent(self.llm, self.store, mode="auto", lang=get_lang())
         result = agent.run(prompt, parent_id=self.master_sid, trigger="cron")
@@ -151,17 +167,28 @@ class Orchestrator:
 
     def _run_fix(self, alert, elapsed):
         """修复子session - 一次性 context, 全工具(含高危)"""
+        lang = get_lang()
         node_info = alert.get('node', '')
         state_info = alert.get('roleState', '') or alert.get('healthSummary', '')
-        prompt = (f"告警: {alert['alertname']} on {node_info} "
-                  f"(severity={alert['severity']}")
-        if state_info:
-            prompt += f", 状态={state_info}"
-        prompt += f")\n摘要: {alert.get('summary','')}"
-        # 巡检升级的告警携带详细分析上下文
-        if alert.get('detail'):
-            prompt += f"\n巡检分析: {alert['detail']}"
-        prompt += "\n请诊断并修复此故障。"
+        if lang == "zh":
+            prompt = (f"告警: {alert['alertname']} on {node_info} "
+                      f"(severity={alert['severity']}")
+            if state_info:
+                prompt += f", 状态={state_info}"
+            prompt += f")\n摘要: {alert.get('summary','')}"
+            # 巡检升级的告警携带详细分析上下文
+            if alert.get('detail'):
+                prompt += f"\n巡检分析: {alert['detail']}"
+            prompt += "\n请诊断并修复此故障。"
+        else:
+            prompt = (f"Alert: {alert['alertname']} on {node_info} "
+                      f"(severity={alert['severity']}")
+            if state_info:
+                prompt += f", state={state_info}"
+            prompt += f")\nSummary: {alert.get('summary','')}"
+            if alert.get('detail'):
+                prompt += f"\nInspection analysis: {alert['detail']}"
+            prompt += "\nPlease diagnose and repair this issue."
 
         agent = ReActAgent(self.llm, self.store, mode="fix", lang=get_lang())
         result = agent.run(prompt, parent_id=self.master_sid, trigger=f"alert:{alert['alertname']}")
