@@ -9,6 +9,7 @@
 """
 import json
 import logging
+import re
 import shlex
 import subprocess
 import threading
@@ -350,6 +351,38 @@ def prometheus_targets():
     return []
 
 
+# ---- supervisorctl 输出解析 ----
+# Valid supervisor status values
+_SUPERVISOR_STATUSES = ("RUNNING", "STOPPED", "FATAL", "EXITED", "STARTING", "BACKOFF")
+# Match: "<program_name>  <STATUS>   pid xxx, uptime x:xx:xx"
+_SUPERVISOR_STATUS_RE = re.compile(
+    r'^\S+\s+(' + '|'.join(_SUPERVISOR_STATUSES) + r')\b'
+)
+
+
+def _parse_supervisor_status(stdout):
+    """Parse supervisorctl status output.
+    
+    Returns (status, uptime):
+        - status: one of _SUPERVISOR_STATUSES, or None if output is not a valid status line
+        - uptime: uptime string or empty
+    
+    Valid format: "namenode  RUNNING   pid 64, uptime 0:25:49"
+    Error format: "Traceback (most recent call last):" or "Error: ..."
+    """
+    if not stdout:
+        return None, ""
+    text = stdout.strip()
+    match = _SUPERVISOR_STATUS_RE.match(text)
+    if match:
+        status = match.group(1)
+        uptime = ""
+        if "uptime" in text:
+            uptime = text.split("uptime")[-1].strip()
+        return status, uptime
+    return None, ""
+
+
 # ---- 节点/路径解析 ----
 
 def _node_ip(node_key):
@@ -492,7 +525,11 @@ def _cdh_get_service_status(svc_info, service, node):
 
 
 def _apache_get_service_status(svc_info, service, node):
-    """Apache: 通过 jps + supervisorctl 获取服务状态"""
+    """Apache: 通过 jps + supervisorctl 获取服务状态
+
+    健康判断: supervisorctl 为主, jps 为辅.
+    supervisorctl 不可用本身视为异常 (不应降低标准回退到 jps 判断 GOOD).
+    """
     java_class = svc_info.get("java_class")
     sup_prog = svc_info.get("supervisor_program")
     target_nodes = _resolve_node(svc_info, node)
@@ -510,18 +547,13 @@ def _apache_get_service_status(svc_info, service, node):
                            for line in jps_lines if line.strip()) if java_class else False
 
         # 2. supervisorctl 检查程序状态
-        sup_status = "UNKNOWN"
+        sup_status = None
         sup_uptime = ""
         if sup_prog:
             stdout, stderr, rc = ssh_exec(
                 n, f"supervisorctl -c {sup_conf} status {sup_prog} 2>&1")
-            # 输出格式: "namenode  RUNNING   pid 64, uptime 0:25:49"
-            if stdout:
-                parts = stdout.split()
-                if len(parts) >= 2:
-                    sup_status = parts[1]  # RUNNING / STOPPED / FATAL / EXITED / STARTING
-                    if "uptime" in stdout:
-                        sup_uptime = stdout.split("uptime")[-1].strip()
+            # 健壮解析: 区分正常状态行和错误/traceback 输出
+            sup_status, sup_uptime = _parse_supervisor_status(stdout)
 
         # 综合判断健康状态
         if sup_status == "RUNNING" and process_found:
@@ -541,6 +573,7 @@ def _apache_get_service_status(svc_info, service, node):
             health = "CONCERNING"
             state = "STARTING"
         else:
+            # supervisorctl 不可用或返回未知状态, 视为异常
             health = "BAD"
             state = "UNKNOWN"
 
@@ -549,7 +582,7 @@ def _apache_get_service_status(svc_info, service, node):
             "node": hostname,
             "roleState": state,
             "healthSummary": health,
-            "supervisor_status": sup_status,
+            "supervisor_status": sup_status or "UNKNOWN",
             "uptime": sup_uptime,
             "process_detected": process_found,
         })
@@ -648,24 +681,24 @@ def _apache_get_alerts():
             sup_conf = _node_supervisor_conf(n)
             stdout, _, _ = ssh_exec(
                 n, f"supervisorctl -c {sup_conf} status {sup_prog} 2>&1")
-            if stdout:
-                parts = stdout.split()
-                if len(parts) >= 2 and parts[1] in ("STOPPED", "EXITED", "FATAL"):
-                    # 检查是否已经在 Prometheus 告警中
-                    already_alerted = any(
-                        a.get("node") == hostname and a.get("service") == svc_name
-                        for a in alerts
-                    )
-                    if not already_alerted:
-                        alerts.append({
-                            "alertname": f"{svc_name}_DOWN",
-                            "severity": "critical",
-                            "service": svc_name,
-                            "node": hostname,
-                            "roleState": parts[1],
-                            "summary": f"{svc_name} on {hostname}: "
-                                       f"supervisor status={parts[1]}",
-                        })
+            # 健壮解析: 只接受有效的 supervisor 状态值, 忽略 traceback/error 输出
+            sup_status, _ = _parse_supervisor_status(stdout)
+            if sup_status in ("STOPPED", "EXITED", "FATAL"):
+                # 检查是否已经在 Prometheus 告警中
+                already_alerted = any(
+                    a.get("node") == hostname and a.get("service") == svc_name
+                    for a in alerts
+                )
+                if not already_alerted:
+                    alerts.append({
+                        "alertname": f"{svc_name}_DOWN",
+                        "severity": "critical",
+                        "service": svc_name,
+                        "node": hostname,
+                        "roleState": sup_status,
+                        "summary": f"{svc_name} on {hostname}: "
+                                   f"supervisor status={sup_status}",
+                    })
 
     # 注意: 以下检测已移除, 改由巡检 LLM 在 /auto 中分析工具输出自行发现:
     # - HDFS Safe Mode (hdfs_admin(report/safemode_get) 输出中 "Safe mode is ON")
@@ -1414,11 +1447,13 @@ def _apache_get_cluster_snapshot():
             sup_conf = _node_supervisor_conf(n)
             stdout, _, _ = ssh_exec(
                 n, f"supervisorctl -c {sup_conf} status {sup_prog} 2>&1")
-            if stdout:
-                parts = stdout.split()
-                status = parts[1] if len(parts) >= 2 else "UNKNOWN"
+            # 健壮解析: 只接受有效的 supervisor 状态值
+            sup_status, _ = _parse_supervisor_status(stdout)
+            if sup_status:
+                status = sup_status
                 health = "GOOD" if status == "RUNNING" else "BAD"
             else:
+                # supervisorctl 不可用, 视为异常
                 status = "UNKNOWN"
                 health = "BAD"
             roles.append({"node": hostname, "state": status, "health": health})

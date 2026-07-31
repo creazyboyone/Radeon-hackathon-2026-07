@@ -248,7 +248,19 @@ fi
 # SSH ports (direct install mode extra check)
 if [ "$MODE" = "direct" ]; then
   echo "  [SSH]"
-  for p in 22 2222 2223 2224; do
+  # Dynamically detect SSH listening ports.
+  # Single-node direct install: only port 22 (setup-hadoop-direct.sh starts one sshd).
+  # Legacy/Docker 3-node: ports 2222/2223/2224 (container port mapping).
+  # Instead of hardcoding, discover actual sshd listeners to avoid false FAILs.
+  SSH_PORTS=""
+  if command -v ss >/dev/null 2>&1; then
+    SSH_PORTS=$(ss -tlnp 2>/dev/null | grep sshd | awk '{print $4}' | awk -F: '{print $NF}' | sort -un)
+  elif command -v netstat >/dev/null 2>&1; then
+    SSH_PORTS=$(netstat -tlnp 2>/dev/null | grep sshd | awk '{print $4}' | awk -F: '{print $NF}' | sort -un)
+  fi
+  SSH_PORTS=${SSH_PORTS:-22}  # fallback to 22 if detection fails
+
+  for p in $SSH_PORTS; do
     if nc -z localhost "$p" 2>/dev/null; then
       check_pass "Port $p"
     else

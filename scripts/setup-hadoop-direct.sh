@@ -11,7 +11,7 @@
 #   ZK retained: HBase distributed=true mode requires external ZK coordination
 #   JN removed: only needed for HDFS HA (QJM), single NN does not need it
 #   ZK admin.serverPort=9888: avoid conflict with YARN RM web UI 8080
-# 3 SSH ports (2222/2223/2224) for Agent connection
+# SSH on port 22 (single-node direct install, no Docker port mapping)
 # Usage: bash scripts/setup-hadoop-direct.sh
 set -euo pipefail
 
@@ -35,7 +35,7 @@ echo "===== Single-node Hadoop direct install (software stack matches Docker) ==
 echo "[0/10] Cleaning up residual processes and locks..."
 
 # Stop old supervisord
-supervisorctl -c /etc/supervisor/conf.d/supervisord-hadoop01.conf shutdown 2>/dev/null || true
+supervisorctl -c /etc/supervisor/conf.d/supervisord-hadoop01.conf shutdown >/dev/null 2>&1 || true
 pkill -f supervisord 2>/dev/null || true
 
 # Kill residual Java processes (NN/DN/RM/NM/JHS/HM/RS/ZK/HMS/HS2)
@@ -368,7 +368,7 @@ SQL
 echo "  MySQL: metastore DB + hive user created"
 
 # ============================================================
-# 6. SSH setup (3 ports 2222/2223/2224, matches Docker port mapping)
+# 6. SSH setup (single sshd on port 22, no Docker port mapping needed)
 # ============================================================
 echo "[6/10] SSH setup..."
 SSH_DIR="/root/.ssh"
@@ -670,7 +670,7 @@ echo "  Alertmanager: OK"
 echo "[9/10] Format HDFS + start..."
 
 # Stop old supervisord first (if any)
-$SUPCTL shutdown 2>/dev/null || true
+$SUPCTL shutdown >/dev/null 2>&1 || true
 pkill -f supervisord 2>/dev/null || true
 sleep 2
 
@@ -735,7 +735,14 @@ $HADOOP_HOME/bin/hdfs dfsadmin -report 2>/dev/null | head -10 || echo "  HDFS no
 
 echo ""
 echo "=== SSH ports ==="
-for p in 22 2222 2223 2224; do
+# Dynamically detect SSH listening ports (single-node: port 22 only)
+if command -v ss >/dev/null 2>&1; then
+  DETECTED_SSH_PORTS=$(ss -tlnp 2>/dev/null | grep sshd | awk '{print $4}' | awk -F: '{print $NF}' | sort -un)
+elif command -v netstat >/dev/null 2>&1; then
+  DETECTED_SSH_PORTS=$(netstat -tlnp 2>/dev/null | grep sshd | awk '{print $4}' | awk -F: '{print $NF}' | sort -un)
+fi
+DETECTED_SSH_PORTS=${DETECTED_SSH_PORTS:-22}
+for p in $DETECTED_SSH_PORTS; do
   nc -z localhost $p 2>/dev/null && echo "  port $p: OK" || echo "  port $p: FAIL"
 done
 
@@ -768,5 +775,5 @@ echo "  HBase UI:       http://localhost:16010"
 echo "  Prometheus:     http://localhost:9090"
 echo "  Grafana:        http://localhost:3000 (admin/admin)"
 echo "  Alertmanager:   http://localhost:9093"
-echo "  SSH:            localhost:2222 (hadoop01/02/03 shared)"
+echo "  SSH:            localhost:22"
 echo "  supervisorctl status  to view service status"
