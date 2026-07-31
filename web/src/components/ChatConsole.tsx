@@ -13,6 +13,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { wsManager } from '../websocket'
 import { dataCache } from '../dataCache'
+import { useI18n } from '../i18n'
 
 const { Text } = Typography
 
@@ -50,7 +51,7 @@ const EMPTY_EVENTS: AgentEvent[] = []
 
 function fmtTime(ts: number): string {
   if (!ts) return ''
-  return new Date(ts * 1000).toLocaleTimeString('zh-CN', { hour12: false })
+  return new Date(ts * 1000).toLocaleTimeString(lang === 'zh' ? 'zh-CN' : 'en-US', { hour12: false })
 }
 
 const EV_COLORS: Record<string, string> = {
@@ -69,6 +70,7 @@ const EV_ICONS: Record<string, any> = {
 // ---- 单个事件渲染 (纯文本, 不用 Markdown) ----
 
 const EventItem = memo(({ ev }: { ev: AgentEvent }) => {
+  const { t } = useI18n()
   const kind = ev.kind
   const c = ev.content || {}
   const color = EV_COLORS[kind] || '#64748b'
@@ -89,7 +91,7 @@ const EventItem = memo(({ ev }: { ev: AgentEvent }) => {
     return (
       <div style={containerStyle}>
         <div style={{ fontSize: 11, color, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
-          {Icon} 思考
+          {Icon} {t('agent.thinking')}
         </div>
         <div style={{ fontSize: 12, color: '#c7d2fe', lineHeight: 1.4, whiteSpace: 'pre-wrap' }}>{text}</div>
       </div>
@@ -101,7 +103,7 @@ const EventItem = memo(({ ev }: { ev: AgentEvent }) => {
     return (
       <div style={containerStyle}>
         <div style={{ fontSize: 11, color, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
-          {Icon} 工具: <b style={{ color: '#86efac' }}>{c.name}</b>
+          {Icon} {t('chat.tool')}: <b style={{ color: '#86efac' }}>{c.name}</b>
         </div>
         <div style={{ fontSize: 10, color: '#86efac', whiteSpace: 'pre-wrap', wordBreak: 'break-all', opacity: 0.7 }}>
           {args}
@@ -114,7 +116,7 @@ const EventItem = memo(({ ev }: { ev: AgentEvent }) => {
     const result = typeof c.result === 'string' ? c.result : JSON.stringify(c.result || {})
     return (
       <div style={containerStyle}>
-        <div style={{ fontSize: 11, color, marginBottom: 2 }}>结果{c.approved === false ? ' (已拦截)' : ''}</div>
+        <div style={{ fontSize: 11, color, marginBottom: 2 }}>{t('agent.result')}{c.approved === false ? ` (${t('chat.blocked')})` : ''}</div>
         <div style={{ fontSize: 10, color: '#cbd5e1', whiteSpace: 'pre-wrap', wordBreak: 'break-all', opacity: 0.7, maxHeight: 200, overflow: 'auto' }}>
           {result}
         </div>
@@ -128,7 +130,7 @@ const EventItem = memo(({ ev }: { ev: AgentEvent }) => {
     return (
       <div style={containerStyle}>
         <div style={{ fontSize: 11, color, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
-          {Icon} 响应
+          {Icon} {t('agent.response')}
         </div>
         <div style={{ fontSize: 12, color: '#e2e8f0', whiteSpace: 'pre-wrap' }}>{text}</div>
       </div>
@@ -139,7 +141,7 @@ const EventItem = memo(({ ev }: { ev: AgentEvent }) => {
     return (
       <div style={containerStyle}>
         <div style={{ fontSize: 11, color, display: 'flex', alignItems: 'center', gap: 4 }}>
-          {Icon} 学习闭环
+          {Icon} {t('chat.learningLoop')}
         </div>
       </div>
     )
@@ -149,7 +151,7 @@ const EventItem = memo(({ ev }: { ev: AgentEvent }) => {
     return (
       <div style={containerStyle}>
         <div style={{ fontSize: 11, color, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
-          {Icon} 错误
+          {Icon} {t('chat.error')}
         </div>
         <div style={{ fontSize: 12, color: '#fca5a5' }}>{c.error || JSON.stringify(c)}</div>
       </div>
@@ -162,6 +164,7 @@ const EventItem = memo(({ ev }: { ev: AgentEvent }) => {
 // ---- 思考链 ----
 
 function ThinkingTimeline({ events, loading }: { events: AgentEvent[], loading: boolean }) {
+  const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
   const prevLoadingRef = useRef(false)
 
@@ -188,9 +191,9 @@ function ThinkingTimeline({ events, loading }: { events: AgentEvent[], loading: 
         label: (
           <span style={{ fontSize: 11, color: '#64748b', display: 'flex', alignItems: 'center', gap: 4 }}>
             {loading ? (
-              <><Spin size="small" style={{ marginRight: 4 }} /> Agent 处理中... ({displayEvents.length})</>
+              <><Spin size="small" style={{ marginRight: 4 }} /> {t('chat.agentProcessing')}... ({displayEvents.length})</>
             ) : (
-              <><BulbOutlined /> 思考过程 ({displayEvents.length})</>
+              <><BulbOutlined /> {t('chat.thinkingProcess')} ({displayEvents.length})</>
             )}
           </span>
         ),
@@ -213,6 +216,7 @@ const MessageItem = memo(({ msg, events, isProcessing }: {
   events: AgentEvent[]
   isProcessing: boolean
 }) => {
+  const { t } = useI18n()
   const hasEvents = events.length > 0
 
   // Extract streaming content text for building-up response display
@@ -291,14 +295,14 @@ const MessageItem = memo(({ msg, events, isProcessing }: {
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' }}>
                 <Spin size="small" />
                 <span style={{ color: '#64748b', fontSize: 12 }}>
-                  {msg.status === 'pending' ? '排队中...' : 'Agent 思考中...'}
+                  {msg.status === 'pending' ? t('chat.queued') : t('chat.agentThinking')}
                 </span>
               </div>
             )}
 
             {msg.status === 'error' && (
               <div style={{ color: '#f87171', padding: '6px 0', fontSize: 12 }}>
-                处理失败: {msg.reply || '未知错误'}
+                {t('chat.processFailed')}: {msg.reply || t('chat.unknownError')}
               </div>
             )}
 
@@ -322,6 +326,7 @@ const MessageItem = memo(({ msg, events, isProcessing }: {
 // ---- 主组件 ----
 
 function ChatConsole() {
+  const { t, lang } = useI18n()
   const [sessions, setSessions] = useState<ChatSession[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMsg[]>([])
@@ -569,7 +574,7 @@ function ChatConsole() {
     try {
       const res = await fetch('/api/chat/sessions', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: '新对话' }),
+        body: JSON.stringify({ title: t('chat.newChatTitle') }),
       })
       const data: ChatSession = await res.json()
       setSessions(prev => [data, ...prev])
@@ -632,8 +637,8 @@ function ChatConsole() {
         styles={{ body: { flex: 1, overflow: 'hidden', minHeight: 0, padding: '8px 0' } }}
         title={
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: 13 }}>对话</span>
-            <Tooltip title="新建对话">
+            <span style={{ fontSize: 13 }}>{t('chat.title')}</span>
+            <Tooltip title={t('chat.newChat')}>
               <Button size="small" type="text" icon={<PlusOutlined />} onClick={newSession} />
             </Tooltip>
           </div>
@@ -642,8 +647,8 @@ function ChatConsole() {
         <div className="chat-session-list" style={{ height: '100%', overflow: 'auto' }}>
           {sessions.length === 0 ? (
             <div style={{ padding: 16, textAlign: 'center' }}>
-              <Empty description="无对话" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-              <Button type="dashed" icon={<PlusOutlined />} onClick={newSession} size="small" style={{ marginTop: 8 }}>新建对话</Button>
+              <Empty description={t('chat.noChat')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              <Button type="dashed" icon={<PlusOutlined />} onClick={newSession} size="small" style={{ marginTop: 8 }}>{t('chat.newChat')}</Button>
             </div>
           ) : (
             <List
@@ -667,10 +672,10 @@ function ChatConsole() {
                       marginBottom: 2,
                     }}>{s.title}</div>
                     <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>
-                      {s.msg_count} 条 · {fmtTime(s.updated_at)}
+                      {s.msg_count} {t('chat.msgs')} · {fmtTime(s.updated_at)}
                     </div>
                   </div>
-                  <Popconfirm title="删除此对话?" onConfirm={(e) => { e?.stopPropagation(); deleteSession(s.id) }} onCancel={(e) => e?.stopPropagation()}>
+                  <Popconfirm title={t('chat.deleteConfirm')} onConfirm={(e) => { e?.stopPropagation(); deleteSession(s.id) }} onCancel={(e) => e?.stopPropagation()}>
                     <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={(e) => e.stopPropagation()} style={{ opacity: 0.5 }} />
                   </Popconfirm>
                 </List.Item>
@@ -688,9 +693,9 @@ function ChatConsole() {
         title={
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
             <MessageOutlined style={{ color: '#38bdf8' }} />
-            <span>{activeSession?.title || '对话'}</span>
-            {processingCount > 0 && <Badge count={processingCount} status="processing" title="Agent 处理中" />}
-            <Badge status={connected ? 'success' : 'error'} text={connected ? '实时' : '离线'} style={{ marginLeft: 'auto', fontSize: 11 }} />
+            <span>{activeSession?.title || t('chat.title')}</span>
+            {processingCount > 0 && <Badge count={processingCount} status="processing" title={t('chat.agentProcessing')} />}
+            <Badge status={connected ? 'success' : 'error'} text={connected ? t('chat.live') : t('chat.offline')} style={{ marginLeft: 'auto', fontSize: 11 }} />
           </div>
         }
       >
@@ -698,12 +703,12 @@ function ChatConsole() {
           {!activeId ? (
             <div style={{ textAlign: 'center', color: '#475569', marginTop: 60 }}>
               <RobotOutlined style={{ fontSize: 36, marginBottom: 10, color: '#334155' }} />
-              <div style={{ fontSize: 13 }}>选择左侧对话或点击 <PlusOutlined /> 新建对话</div>
+              <div style={{ fontSize: 13 }}>{t('chat.selectOrCreate')}</div>
             </div>
           ) : messages.length === 0 ? (
             <div style={{ textAlign: 'center', color: '#475569', marginTop: 60 }}>
               <RobotOutlined style={{ fontSize: 36, marginBottom: 10, color: '#334155' }} />
-              <div style={{ fontSize: 13 }}>向 Agent 提问或报障</div>
+              <div style={{ fontSize: 13 }}>{t('chat.askOrReport')}</div>
             </div>
           ) : (
             messages.map((msg) => {
@@ -721,14 +726,14 @@ function ChatConsole() {
           <Input.TextArea
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={activeId ? "提问或报障，如：HDFS /quota_test 配额超限" : "请先选择或新建对话"}
+            placeholder={activeId ? t('chat.inputPlaceholder') : t('chat.selectFirst')}
             autoSize={{ minRows: 1, maxRows: 4 }}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() } }}
             style={{ flex: 1, resize: 'none', fontSize: 13, lineHeight: 1.6 }}
             disabled={sending || !activeId}
           />
-          <Tooltip title="发送 (Enter 发送, Shift+Enter 换行)">
-            <Button type="primary" icon={<SendOutlined />} onClick={sendMessage} loading={sending} disabled={!activeId} style={{ flexShrink: 0, height: 36 }}>发送</Button>
+          <Tooltip title={t('chat.sendHint')}>
+            <Button type="primary" icon={<SendOutlined />} onClick={sendMessage} loading={sending} disabled={!activeId} style={{ flexShrink: 0, height: 36 }}>{t('chat.send')}</Button>
           </Tooltip>
         </div>
       </Card>

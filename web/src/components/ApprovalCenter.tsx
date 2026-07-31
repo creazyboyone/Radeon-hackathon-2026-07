@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Table, Tag, Button, Space, Card, Empty, message } from 'antd'
 import { CheckOutlined, CloseOutlined, ReloadOutlined } from '@ant-design/icons'
+import { useI18n } from '../i18n'
 
 interface Approval {
   id: string; session_id: string; tool_name: string; args: any
@@ -10,14 +11,15 @@ interface Approval {
 const RISK_COLORS: Record<string, string> = {
   high: 'red', medium: 'orange', low: 'green', destructive: 'volcano',
 }
-const RISK_LABELS: Record<string, string> = {
-  high: '高危', medium: '中危', low: '低危', destructive: '破坏性',
+const RISK_KEYS: Record<string, string> = {
+  high: 'approval.high', medium: 'approval.medium', low: 'approval.low', destructive: 'approval.destructive',
 }
-const STATUS_LABELS: Record<string, string> = {
-  pending: '待审批', approved: '已批准', rejected: '已拒绝',
+const STATUS_KEYS: Record<string, string> = {
+  pending: 'approval.pending', approved: 'approval.approved', rejected: 'approval.rejected',
 }
 
 function ApprovalCenter() {
+  const { t } = useI18n()
   const [approvals, setApprovals] = useState<Approval[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -47,51 +49,51 @@ function ApprovalCenter() {
         body: JSON.stringify({ status, decided_by: 'web-user' }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      message.success(`${status === 'approved' ? '已批准' : '已拒绝'}: ${id}`)
+      message.success(`${status === 'approved' ? t('approval.approved') : t('approval.rejected')}: ${id}`)
     } catch (e) {
       console.error('decide failed:', e)
-      message.error('操作失败')
+      message.error(t('approval.opFailed'))
     }
     fetchApprovals()
   }
 
   const columns = [
     {
-      title: '风险', dataIndex: 'risk_level', key: 'risk', width: 80,
-      render: (v: string) => <Tag color={RISK_COLORS[v] || 'default'}>{RISK_LABELS[v] || v}</Tag>,
+      title: t('approval.risk'), dataIndex: 'risk_level', key: 'risk', width: 80,
+      render: (v: string) => <Tag color={RISK_COLORS[v] || 'default'}>{t(RISK_KEYS[v] as any) || v}</Tag>,
     },
-    { title: '工具', dataIndex: 'tool_name', key: 'tool', width: 140 },
+    { title: t('approval.tool'), dataIndex: 'tool_name', key: 'tool', width: 140 },
     {
-      title: '参数', key: 'args',
+      title: t('approval.args'), key: 'args',
       render: (_: any, r: Approval) => (
         <span style={{ fontSize: 12, fontFamily: 'monospace' }}>{JSON.stringify(r.args)}</span>
       ),
     },
     {
-      title: '预览', key: 'dry_run', width: 220,
+      title: t('approval.preview'), key: 'dry_run', width: 220,
       render: (_: any, r: Approval) => r.dry_run?.message || '-',
     },
     {
-      title: '状态', dataIndex: 'status', key: 'status', width: 90,
+      title: t('approval.status'), dataIndex: 'status', key: 'status', width: 90,
       render: (v: string) => (
         <Tag color={v === 'approved' ? 'success' : v === 'rejected' ? 'error' : 'processing'}>
-          {STATUS_LABELS[v] || v}
+          {t(STATUS_KEYS[v] as any) || v}
         </Tag>
       ),
     },
     {
-      title: '审批人', dataIndex: 'decided_by', key: 'by', width: 120,
+      title: t('approval.approver'), dataIndex: 'decided_by', key: 'by', width: 120,
       render: (v: string) => v || '-',
     },
     {
-      title: '操作', key: 'action', width: 160,
+      title: t('approval.action'), key: 'action', width: 160,
       render: (_: any, r: Approval) =>
         r.status === 'pending' ? (
           <Space>
             <Button type="primary" size="small" icon={<CheckOutlined />}
-              onClick={() => decide(r.id, 'approved')}>批准</Button>
+              onClick={() => decide(r.id, 'approved')}>{t('approval.approve')}</Button>
             <Button danger size="small" icon={<CloseOutlined />}
-              onClick={() => decide(r.id, 'rejected')}>拒绝</Button>
+              onClick={() => decide(r.id, 'rejected')}>{t('approval.reject')}</Button>
           </Space>
         ) : null,
     },
@@ -103,11 +105,11 @@ function ApprovalCenter() {
     <div style={{ height: '100%', overflow: 'auto' }}>
       <Card
         size="small"
-        title={`审批中心 (${pending.length} 待审批 / ${approvals.length} 总计)`}
-        extra={<Button icon={<ReloadOutlined />} onClick={fetchApprovals} size="small">刷新</Button>}
+        title={`${t('approval.title')} (${pending.length} ${t('approval.pendingCount')} / ${approvals.length} ${t('approval.total')})`}
+        extra={<Button icon={<ReloadOutlined />} onClick={fetchApprovals} size="small">{t('approval.refresh')}</Button>}
       >
         {approvals.length === 0 && !loading ? (
-          <Empty description="暂无审批记录" />
+          <Empty description={t('approval.empty')} />
         ) : (
           <Table
             dataSource={approvals}

@@ -7,6 +7,7 @@ import {
   PlusOutlined, ReloadOutlined, EditOutlined, DeleteOutlined,
   BookOutlined, CheckOutlined, CloseOutlined, SearchOutlined,
 } from '@ant-design/icons'
+import { useI18n } from '../i18n'
 
 const { TextArea } = Input
 const { Text } = Typography
@@ -39,21 +40,22 @@ const STATUS_COLORS: Record<string, string> = {
   pending_review: 'warning',
   rejected: 'error',
 }
-const STATUS_LABELS: Record<string, string> = {
-  approved: '已审核',
-  pending_review: '待审核',
-  rejected: '已拒绝',
+const STATUS_KEYS: Record<string, string> = {
+  approved: 'kb.approved',
+  pending_review: 'kb.pendingReview',
+  rejected: 'kb.rejected',
 }
 const SOURCE_COLORS: Record<string, string> = {
   manual: 'blue',
   agent_generated: 'purple',
 }
-const SOURCE_LABELS: Record<string, string> = {
-  manual: '手动',
-  agent_generated: 'Agent回写',
+const SOURCE_KEYS: Record<string, string> = {
+  manual: 'kb.manual',
+  agent_generated: 'kb.agentGen',
 }
 
 function KnowledgeBase() {
+  const { t, lang } = useI18n()
   const [runbooks, setRunbooks] = useState<Runbook[]>([])
   const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(false)
@@ -75,7 +77,7 @@ function KnowledgeBase() {
       setRunbooks(Array.isArray(data) ? data : [])
     } catch (e) {
       console.error('fetchRunbooks failed:', e)
-      message.error('加载知识库失败')
+      message.error(t('kb.loadFailed'))
     }
     setLoading(false)
   }, [filterStatus])
@@ -111,13 +113,13 @@ function KnowledgeBase() {
         body: JSON.stringify(rb),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      message.success(editing ? 'Runbook 已更新' : 'Runbook 已创建')
+      message.success(editing ? t('kb.updated') : t('kb.created'))
       setModalOpen(false)
       form.resetFields()
       fetchRunbooks()
       fetchStats()
     } catch (e) {
-      message.error('保存失败: ' + (e as Error).message)
+      message.error(t('kb.saveFailed') + ': ' + (e as Error).message)
     }
   }
 
@@ -125,11 +127,11 @@ function KnowledgeBase() {
     try {
       const res = await fetch(`/api/runbooks/${id}`, { method: 'DELETE' })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      message.success('已删除')
+      message.success(t('kb.deleted'))
       fetchRunbooks()
       fetchStats()
     } catch (e) {
-      message.error('删除失败')
+      message.error(t('kb.deleteFailed'))
     }
   }
 
@@ -141,11 +143,11 @@ function KnowledgeBase() {
         body: JSON.stringify({ status, decided_by: 'web-user' }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      message.success(status === 'approved' ? '已通过审核' : '已拒绝')
+      message.success(status === 'approved' ? t('kb.reviewPassed') : t('kb.reviewRejected'))
       fetchRunbooks()
       fetchStats()
     } catch (e) {
-      message.error('审核失败')
+      message.error(t('kb.reviewFailed'))
     }
   }
 
@@ -160,55 +162,55 @@ function KnowledgeBase() {
       const data = await res.json()
       setSearchResults(data.results || [])
     } catch (e) {
-      message.error('检索失败')
+      message.error(t('kb.searchFailed'))
     }
     setSearching(false)
   }
 
   const columns = [
     {
-      title: '标题', dataIndex: 'title', key: 'title',
+      title: t('kb.title'), dataIndex: 'title', key: 'title',
       render: (v: string, r: Runbook) => (
         <Tooltip title={r.content.slice(0, 100) + '...'} placement="topLeft">
           <Text strong>{v}</Text>
         </Tooltip>
       ),
     },
-    { title: '标签', dataIndex: 'tags', key: 'tags', width: 180,
+    { title: t('kb.tags'), dataIndex: 'tags', key: 'tags', width: 180,
       render: (v: string) => v ? v.split(',').map((t: string) =>
         <Tag key={t} color="blue" style={{ marginBottom: 2 }}>{t.trim()}</Tag>
       ) : '—',
     },
     {
-      title: '来源', dataIndex: 'source', key: 'source', width: 100,
-      render: (v: string) => <Tag color={SOURCE_COLORS[v]}>{SOURCE_LABELS[v] || v}</Tag>,
+      title: t('kb.source'), dataIndex: 'source', key: 'source', width: 100,
+      render: (v: string) => <Tag color={SOURCE_COLORS[v]}>{t(SOURCE_KEYS[v] as any) || v}</Tag>,
     },
     {
-      title: '状态', dataIndex: 'status', key: 'status', width: 90,
-      render: (v: string) => <Tag color={STATUS_COLORS[v]}>{STATUS_LABELS[v] || v}</Tag>,
+      title: t('kb.status'), dataIndex: 'status', key: 'status', width: 90,
+      render: (v: string) => <Tag color={STATUS_COLORS[v]}>{t(STATUS_KEYS[v] as any) || v}</Tag>,
     },
     {
-      title: '置信度', dataIndex: 'confidence', key: 'conf', width: 80,
+      title: t('kb.confidence'), dataIndex: 'confidence', key: 'conf', width: 80,
       render: (v: number) => v != null ? `${(v * 100).toFixed(0)}%` : '—',
     },
     {
-      title: '更新时间', dataIndex: 'updated_at', key: 'ts', width: 130,
-      render: (v: number) => v ? new Date(v * 1000).toLocaleString('zh-CN',
+      title: t('kb.updatedAt'), dataIndex: 'updated_at', key: 'ts', width: 130,
+      render: (v: number) => v ? new Date(v * 1000).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US',
         { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—',
     },
     {
-      title: '操作', key: 'action', width: 180,
+      title: t('kb.action'), key: 'action', width: 180,
       render: (_: any, r: Runbook) => (
         <Space size="small">
           {r.status === 'pending_review' && (
             <>
               <Button size="small" type="primary" icon={<CheckOutlined />}
                 onClick={() => handleReview(r.id, 'approved')}>
-                通过
+                {t('kb.pass')}
               </Button>
               <Button size="small" danger icon={<CloseOutlined />}
                 onClick={() => handleReview(r.id, 'rejected')}>
-                拒绝
+                {t('kb.reject')}
               </Button>
             </>
           )}
@@ -232,23 +234,23 @@ function KnowledgeBase() {
         <Card size="small" style={{ marginBottom: 12 }}>
           <Row gutter={16}>
             <Col span={4}>
-              <Statistic title="总计" value={stats.total} prefix={<BookOutlined />} />
+              <Statistic title={t('kb.total')} value={stats.total} prefix={<BookOutlined />} />
             </Col>
             <Col span={4}>
-              <Statistic title="已审核" value={stats.approved} valueStyle={{ color: '#52c41a' }} />
+              <Statistic title={t('kb.approved')} value={stats.approved} valueStyle={{ color: '#52c41a' }} />
             </Col>
             <Col span={4}>
-              <Statistic title="待审核" value={stats.pending_review}
+              <Statistic title={t('kb.pendingReview')} value={stats.pending_review}
                 valueStyle={{ color: stats.pending_review > 0 ? '#faad14' : undefined }} />
             </Col>
             <Col span={4}>
-              <Statistic title="已拒绝" value={stats.rejected} valueStyle={{ color: '#ff4d4f' }} />
+              <Statistic title={t('kb.rejected')} value={stats.rejected} valueStyle={{ color: '#ff4d4f' }} />
             </Col>
             <Col span={4}>
-              <Statistic title="手动添加" value={stats.manual} />
+              <Statistic title={t('kb.manualAdd')} value={stats.manual} />
             </Col>
             <Col span={4}>
-              <Statistic title="Agent回写" value={stats.agent_generated}
+              <Statistic title={t('kb.agentGen')} value={stats.agent_generated}
                 valueStyle={{ color: stats.agent_generated > 0 ? '#722ed1' : undefined }} />
             </Col>
           </Row>
@@ -256,17 +258,17 @@ function KnowledgeBase() {
       )}
 
       {/* 检索测试 */}
-      <Card size="small" style={{ marginBottom: 12 }} title="知识库检索测试">
+      <Card size="small" style={{ marginBottom: 12 }} title={t('kb.searchTest')}>
         <Space.Compact style={{ width: '100%' }}>
           <Input
-            placeholder="输入查询词, 测试向量+BM25混合检索..."
+            placeholder={t('kb.searchPlaceholder')}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onPressEnter={handleSearch}
             prefix={<SearchOutlined />}
           />
           <Button type="primary" onClick={handleSearch} loading={searching}>
-            检索
+            {t('kb.search')}
           </Button>
         </Space.Compact>
         {searchResults.length > 0 && (
@@ -276,7 +278,7 @@ function KnowledgeBase() {
                 background: 'rgba(255,255,255,0.02)' }}>
                 <Space>
                   <Tag color={r.match_type === 'vector' ? 'green' : 'blue'}>
-                    {r.match_type === 'vector' ? '向量' : 'BM25'}
+                    {r.match_type === 'vector' ? t('kb.vector') : t('kb.bm25')}
                   </Tag>
                   <Tag>score: {r.score?.toFixed(3)}</Tag>
                   <Text strong>{r.title}</Text>
@@ -293,29 +295,29 @@ function KnowledgeBase() {
       {/* Runbook 列表 */}
       <Card
         size="small"
-        title={`知识库 (${runbooks.length} 条)`}
+        title={`${t('kb.kbTitle')} (${runbooks.length} ${t('kb.entries')})`}
         extra={
           <Space>
             <Select
-              placeholder="状态筛选"
+              placeholder={t('kb.filterStatus')}
               allowClear
               style={{ width: 120 }}
               value={filterStatus || undefined}
               onChange={(v) => setFilterStatus(v || '')}
-              options={Object.entries(STATUS_LABELS).map(([k, v]) => ({ value: k, label: v }))}
+              options={Object.entries(STATUS_KEYS).map(([k, v]) => ({ value: k, label: t(v as any) }))}
             />
             <Button icon={<ReloadOutlined />} onClick={() => { fetchRunbooks(); fetchStats() }} size="small">
-              刷新
+              {t('kb.refresh')}
             </Button>
             <Button type="primary" icon={<PlusOutlined />} size="small"
               onClick={() => { setEditing(null); form.resetFields(); setModalOpen(true) }}>
-              新增
+              {t('kb.add')}
             </Button>
           </Space>
         }
       >
         {runbooks.length === 0 && !loading ? (
-          <Empty description="暂无知识库条目" />
+          <Empty description={t('kb.empty')} />
         ) : (
           <Table
             dataSource={runbooks}
@@ -331,31 +333,31 @@ function KnowledgeBase() {
 
       {/* 新增/编辑 Modal */}
       <Modal
-        title={editing ? '编辑 Runbook' : '新增 Runbook'}
+        title={editing ? t('kb.editRunbook') : t('kb.addRunbook')}
         open={modalOpen}
         onOk={handleSave}
         onCancel={() => { setModalOpen(false); form.resetFields() }}
         width={680}
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="title" label="标题" rules={[{ required: true, message: '请输入标题' }]}>
-            <Input placeholder="如: DataNode OOM 崩溃修复" />
+          <Form.Item name="title" label={t('kb.title')} rules={[{ required: true, message: t('kb.titleRequired') }]}>
+            <Input placeholder={t('kb.titlePlaceholder')} />
           </Form.Item>
-          <Form.Item name="content" label="内容" rules={[{ required: true, message: '请输入内容' }]}>
+          <Form.Item name="content" label={t('kb.content')} rules={[{ required: true, message: t('kb.contentRequired') }]}>
             <TextArea
-              placeholder="结构化描述: 症状 / 排查步骤 / 根因 / 修复方法 / 验证方式"
+              placeholder={t('kb.contentPlaceholder')}
               rows={8}
             />
           </Form.Item>
-          <Form.Item name="tags" label="标签 (逗号分隔)">
-            <Input placeholder="如: hdfs,datanode,oom" />
+          <Form.Item name="tags" label={t('kb.tagsLabel')}>
+            <Input placeholder={t('kb.tagsPlaceholder')} />
           </Form.Item>
           {!editing && (
-            <Form.Item name="status" label="状态" initialValue="approved">
+            <Form.Item name="status" label={t('kb.status')} initialValue="approved">
               <Select
                 options={[
-                  { value: 'approved', label: '已审核 (直接生效)' },
-                  { value: 'pending_review', label: '待审核' },
+                  { value: 'approved', label: t('kb.approvedNow') },
+                  { value: 'pending_review', label: t('kb.pendingReview') },
                 ]}
               />
             </Form.Item>

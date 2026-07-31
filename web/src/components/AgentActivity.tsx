@@ -10,6 +10,7 @@ import {
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { wsManager } from '../websocket'
+import { useI18n } from '../i18n'
 
 const { Text, Paragraph } = Typography
 
@@ -20,16 +21,29 @@ interface Session {
 interface AgentEvent { type: string; session_id: string; kind: string; content: any }
 interface HistEvent { seq: number; kind: string; content: any; ts: number }
 
-const KIND_CFG: Record<string, { label: string; color: string; icon: any }> = {
-  reasoning:         { label: '思考',   color: 'purple',  icon: <BulbOutlined /> },
-  stream_reasoning:  { label: '思考中', color: 'purple',  icon: <BulbOutlined /> },
-  assistant:         { label: '响应',   color: 'blue',    icon: <RobotOutlined /> },
-  stream_content:    { label: '响应中', color: 'blue',    icon: <RobotOutlined /> },
-  tool_call:         { label: '工具调用', color: 'orange', icon: <ToolOutlined /> },
-  tool_result:       { label: '结果',   color: 'green',   icon: <ApiOutlined /> },
-  user_input:        { label: '输入',   color: 'default', icon: <ThunderboltOutlined /> },
-  final_answer:      { label: '完成',   color: 'success', icon: <CheckCircleOutlined /> },
-  runbook_prompt:    { label: '学习',   color: 'cyan',    icon: <CheckCircleOutlined /> },
+const KIND_KEYS: Record<string, string> = {
+  reasoning: 'agent.thinking',
+  stream_reasoning: 'agent.thinkingNow',
+  assistant: 'agent.response',
+  stream_content: 'agent.responding',
+  tool_call: 'agent.toolCall',
+  tool_result: 'agent.result',
+  user_input: 'agent.input',
+  final_answer: 'agent.done',
+  runbook_prompt: 'agent.learning',
+}
+const KIND_COLORS: Record<string, string> = {
+  reasoning: 'purple', stream_reasoning: 'purple',
+  assistant: 'blue', stream_content: 'blue',
+  tool_call: 'orange', tool_result: 'green',
+  user_input: 'default', final_answer: 'success', runbook_prompt: 'cyan',
+}
+const KIND_ICONS: Record<string, any> = {
+  reasoning: <BulbOutlined />, stream_reasoning: <BulbOutlined />,
+  assistant: <RobotOutlined />, stream_content: <RobotOutlined />,
+  tool_call: <ToolOutlined />, tool_result: <ApiOutlined />,
+  user_input: <ThunderboltOutlined />,
+  final_answer: <CheckCircleOutlined />, runbook_prompt: <CheckCircleOutlined />,
 }
 
 const MD_KINDS = new Set(['reasoning', 'stream_reasoning', 'assistant', 'stream_content', 'final_answer', 'user_input', 'runbook_prompt'])
@@ -37,7 +51,7 @@ const TOOL_KINDS = new Set(['tool_call', 'tool_result'])
 
 
 function fmtTime(ts: number): string {
-  return new Date(ts * 1000).toLocaleTimeString('zh-CN', { hour12: false })
+  return new Date(ts * 1000).toLocaleTimeString(lang === 'zh' ? 'zh-CN' : 'en-US', { hour12: false })
 }
 
 function fmtDateTime(ts: number): string {
@@ -49,34 +63,35 @@ function fmtDateTime(ts: number): string {
   return `${mm}/${dd} ${hh}:${min}`
 }
 
-function extractCall(_name: string, args: any): string {
+function extractCall(_name: string, args: any, t: (k: any) => string): string {
   if (!args) return ''
   const p: string[] = []
   if (args.service) p.push(args.service)
   if (args.node) p.push(args.node)
   if (args.metric) p.push(args.metric)
-  if (args.filter) p.push(`过滤=${args.filter}`)
+  if (args.filter) p.push(`${t('agent.filter')}=${args.filter}`)
   if (args.query) p.push(`"${args.query}"`)
   if (args.action) p.push(args.action)
   if (args.reason) p.push(`(${args.reason.slice(0, 80)})`)
   return p.join(' ')
 }
 
-function extractResult(_name: string, r: any): string {
+function extractResult(_name: string, r: any, t: (k: any) => string): string {
   if (!r || typeof r !== 'object') return ''
-  if (r.error) return `错误: ${r.error}`
-  if (r.overall_health) return `健康=${r.overall_health}, 角色=${r.role_count ?? 0}`
-  if (r.count !== undefined) return `告警数=${r.count}`
-  if (r.total_errors !== undefined) return `错误=${r.total_errors}, 节点=${r.nodes_checked ?? 0}`
-  if (r.matches !== undefined) return `匹配=${r.matches}`
-  if (r.result) return `结果=${r.result}`
-  if (r.command_id) return `命令=${r.command_id}, 结果=${r.result ?? '?'}`
+  if (r.error) return `${t('agent.error')}: ${r.error}`
+  if (r.overall_health) return `${t('agent.healthEq')}=${r.overall_health}, ${t('agent.rolesEq')}=${r.role_count ?? 0}`
+  if (r.count !== undefined) return `${t('agent.alertsEq')}=${r.count}`
+  if (r.total_errors !== undefined) return `${t('agent.errorsEq')}=${r.total_errors}, ${t('agent.nodesEq')}=${r.nodes_checked ?? 0}`
+  if (r.matches !== undefined) return `${t('agent.matchesEq')}=${r.matches}`
+  if (r.result) return `${t('agent.resultEq')}=${r.result}`
+  if (r.command_id) return `${t('agent.commandEq')}=${r.command_id}, ${t('agent.resultEq')}=${r.result ?? '?'}`
   if (r.output) return (r.output as string).slice(0, 100).replace(/\n/g, ' ')
-  if (r.nodes) return `节点=${Object.keys(r.nodes).join(',')}`
+  if (r.nodes) return `${t('agent.nodesEq')}=${Object.keys(r.nodes).join(',')}`
   return JSON.stringify(r).slice(0, 100)
 }
 
 function AgentActivity() {
+  const { t, lang } = useI18n()
   const [sessions, setSessions] = useState<Session[]>([])
   const [selectedSid, setSelectedSid] = useState('')
   const [selectedSession, setSelectedSession] = useState<Session | null>(null)
@@ -234,7 +249,7 @@ function AgentActivity() {
   const roots = sessions.filter(s => !s.parent_id)
   const buildTree = (s: Session): any => {
     const children = sessions.filter(c => c.parent_id === s.id)
-    const labels: Record<string, string> = { master: '主控', auto: '巡检', fix: '修复', chat: '对话' }
+    const labels: Record<string, string> = { master: t('agent.master'), auto: t('agent.inspection'), fix: t('agent.fix'), chat: t('agent.chat') }
     const colors: Record<string, string> = { master: 'processing', auto: 'blue', fix: 'warning', chat: 'geekblue' }
     const latestMaster = sessions.find(x => x.type === 'master' && !x.ended_at)
     const isLatestMaster = s.type === 'master' && !s.ended_at && s.id === latestMaster?.id
@@ -245,7 +260,7 @@ function AgentActivity() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 260 }}>
           <Tag color={colors[s.type]} style={{ margin: 0, fontSize: 11, flexShrink: 0 }}>{labels[s.type] || s.type}</Tag>
           <span style={{ fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap' }}>{fmtDateTime(s.started_at)}</span>
-          {(isLatestMaster || isActiveTask) && <Badge status="processing" title="进行中" />}
+          {(isLatestMaster || isActiveTask) && <Badge status="processing" title={t('agent.inProgress')} />}
         </div>
       ),
       children: children.map(buildTree),
@@ -254,27 +269,27 @@ function AgentActivity() {
   const treeData = roots.map(buildTree)
 
   const renderClusterSnap = () => {
-    if (!clusterSnap) return <Empty description="无集群状态" />
+    if (!clusterSnap) return <Empty description={t('agent.noCluster')} />
     const services = clusterSnap.services || {}
     return (
       <div>
         <Card size="small" style={{ marginBottom: 12 }}>
           <Statistic
-            title="集群整体状态"
+            title={t('agent.clusterHealth')}
             value={clusterSnap.overall_health || 'UNKNOWN'}
             prefix={<DashboardOutlined />}
             valueStyle={{ color: clusterSnap.overall_health === 'GOOD' ? '#22c55e' : '#ef4444' }}
           />
         </Card>
-        <Card size="small" title="服务状态">
+        <Card size="small" title={t('agent.serviceStatus')}>
           {Object.entries(services).map(([name, info]: [string, any]) => (
             <Descriptions key={name} size="small" column={3} bordered style={{ marginBottom: 8 }}
               items={[
-                { key: 'name', label: '服务', children: name },
-                { key: 'health', label: '健康', children: (
+                { key: 'name', label: t('agent.service'), children: name },
+                { key: 'health', label: t('agent.health'), children: (
                   <Tag color={info.health === 'GOOD' ? 'success' : 'error'}>{info.health || 'UNKNOWN'}</Tag>
                 )},
-                { key: 'roles', label: '角色数', children: info.role_count || 0 },
+                { key: 'roles', label: t('agent.roles'), children: info.role_count || 0 },
               ]}
             />
           ))}
@@ -292,10 +307,10 @@ function AgentActivity() {
         size="small"
         style={{ width: 320, flexShrink: 0, height: '100%', display: 'flex', flexDirection: 'column' }}
         styles={{ body: { flex: 1, overflow: 'hidden', minHeight: 0, padding: '8px 12px' } }}
-        title={<Badge status={connected ? 'success' : 'default'} text={connected ? '实时' : '离线'} />}
+        title={<Badge status={connected ? 'success' : 'default'} text={connected ? t('agent.live') : t('agent.offline')} />}
       >
         <div className="chat-session-list" style={{ height: '100%', overflow: 'auto' }}>
-          {sessions.length === 0 ? <Empty description="无会话" /> : (
+          {sessions.length === 0 ? <Empty description={t('agent.noSessions')} /> : (
             <Tree
               treeData={treeData}
               selectedKeys={selectedSid ? [selectedSid] : []}
@@ -313,8 +328,8 @@ function AgentActivity() {
         style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column' }}
         styles={{ body: { flex: 1, overflow: 'hidden', minHeight: 0, padding: 0 } }}
         title={selectedSession
-          ? `${selectedSession.type === 'master' ? '主控' : selectedSession.type === 'auto' ? '巡检' : selectedSession.type === 'fix' ? '修复' : '对话'} ${fmtTime(selectedSession.started_at)}`
-          : '请选择会话'}
+          ? `${selectedSession.type === 'master' ? t('agent.master') : selectedSession.type === 'auto' ? t('agent.inspection') : selectedSession.type === 'fix' ? t('agent.fix') : t('agent.chat')} ${fmtTime(selectedSession.started_at)}`
+          : t('agent.selectSession')}
       >
         <div ref={scrollRef} onScroll={handleScroll} className="chat-msg-list" style={{ height: '100%', overflow: 'auto', padding: '8px 16px' }}>
           {selectedSession?.type === 'master' ? (
@@ -322,18 +337,20 @@ function AgentActivity() {
           ) : loading ? (
             <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>
           ) : events.length === 0 ? (
-            <Empty description="无事件" />
+            <Empty description={t('agent.noEvents')} />
           ) : (
             <Timeline items={renderEvents.map((evt: any, i) => {
-              const cfg = KIND_CFG[evt.kind] || { label: evt.kind, color: 'gray', icon: null }
+              const cfg_color = KIND_COLORS[evt.kind] || 'gray'
+              const cfg_icon = KIND_ICONS[evt.kind] || null
+              const cfg_label = t(KIND_KEYS[evt.kind] as any) || evt.kind
               const content = evt.content || {}
               const isMD = MD_KINDS.has(evt.kind)
               const isTool = TOOL_KINDS.has(evt.kind)
               let summary = ''
               if (evt.kind === 'tool_call')
-                summary = `${content.name}(${extractCall(content.name, content.args || {})})`
+                summary = `${content.name}(${extractCall(content.name, content.args || {}, t)})`
               else if (evt.kind === 'tool_result')
-                summary = extractResult(content.name || '', content.result || content)
+                summary = extractResult(content.name || '', content.result || content, t)
               else if (evt.kind === 'assistant') {
                 // assistant 事件: 显示 text 或 tool_calls
                 const text = content.text || ''
@@ -346,11 +363,11 @@ function AgentActivity() {
                 summary = content.tool_calls.map((tc: any) => tc.name).join(', ')
 
               return {
-                key: i, color: cfg.color as any, dot: cfg.icon,
+                key: i, color: cfg_color as any, dot: cfg_icon,
                 children: (
                   <div>
                     <div style={{ marginBottom: 4 }}>
-                      <Tag color={cfg.color}>{cfg.label}</Tag>
+                      <Tag color={cfg_color}>{cfg_label}</Tag>
                     </div>
                     {isMD ? (
                       <div className="markdown-body" style={{ fontSize: 13, lineHeight: 1.6 }}>
@@ -362,7 +379,7 @@ function AgentActivity() {
                           <Text style={{ fontSize: 13 }}>{summary}</Text>
                         </Paragraph>
                         <Collapse ghost size="small" items={[{
-                          key: 'json', label: 'JSON 详情',
+                          key: 'json', label: t('agent.jsonDetail'),
                           children: (
                             <pre style={{ fontSize: 11, color: '#888', overflow: 'auto',
                               maxHeight: 280, background: '#0d1117',

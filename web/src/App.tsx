@@ -6,7 +6,7 @@ import {
 import {
   RobotOutlined, SafetyOutlined, BellOutlined, UserOutlined,
   BulbFilled, BulbOutlined, LogoutOutlined, BookOutlined,
-  MessageOutlined,
+  MessageOutlined, GlobalOutlined,
 } from '@ant-design/icons'
 import AgentActivity from './components/AgentActivity'
 import ApprovalCenter from './components/ApprovalCenter'
@@ -14,12 +14,14 @@ import RiskRules from './components/RiskRules'
 import KnowledgeBase from './components/KnowledgeBase'
 import ChatConsole from './components/ChatConsole'
 import { dataCache } from './dataCache'
+import { useI18n } from './i18n'
 import './App.css'
 
 const { Sider, Header, Content } = Layout
 const { Title } = Typography
 
 function LoginPage({ onLogin }: { onLogin: (name: string) => void }) {
+  const { t } = useI18n()
   const [loading, setLoading] = useState(false)
   return (
     <div style={{
@@ -28,7 +30,7 @@ function LoginPage({ onLogin }: { onLogin: (name: string) => void }) {
     }}>
       <Card style={{ width: 380 }}>
         <Title level={3} style={{ textAlign: 'center', color: '#38bdf8' }}>
-          AIOps 控制台
+          {t('app.title')}
         </Title>
         <Form
           onFinish={(v: any) => {
@@ -36,14 +38,14 @@ function LoginPage({ onLogin }: { onLogin: (name: string) => void }) {
             setTimeout(() => { onLogin(v.username || 'admin'); setLoading(false) }, 300)
           }}
         >
-          <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
-            <Input prefix={<UserOutlined />} placeholder="用户名" size="large" />
+          <Form.Item name="username" rules={[{ required: true, message: t('app.usernameRequired') }]}>
+            <Input prefix={<UserOutlined />} placeholder={t('app.usernamePlaceholder')} size="large" />
           </Form.Item>
-          <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
-            <Input.Password prefix={<SafetyOutlined />} placeholder="密码" size="large" />
+          <Form.Item name="password" rules={[{ required: true, message: t('app.passwordRequired') }]}>
+            <Input.Password prefix={<SafetyOutlined />} placeholder={t('app.passwordPlaceholder')} size="large" />
           </Form.Item>
           <Button type="primary" htmlType="submit" block size="large" loading={loading}>
-            登录
+            {t('app.login')}
           </Button>
         </Form>
       </Card>
@@ -52,6 +54,7 @@ function LoginPage({ onLogin }: { onLogin: (name: string) => void }) {
 }
 
 function App() {
+  const { t, lang, setLang } = useI18n()
   const [logged, setLogged] = useState(() => !!localStorage.getItem('aiops_user'))
   const [user, setUser] = useState(() => localStorage.getItem('aiops_user') || 'admin')
   const [collapsed, setCollapsed] = useState(false)
@@ -68,7 +71,7 @@ function App() {
             const res = await fetch('/api/approvals?status=pending')
             return res.json()
           },
-          5000 // 5秒缓存
+          5000
         )
         setPendingCount(Array.isArray(data) ? data.length : 0)
       } catch (e) {
@@ -76,8 +79,8 @@ function App() {
       }
     }
     fetchPending()
-    const t = setInterval(fetchPending, 10000) // 10秒轮询（而不是5秒）
-    return () => clearInterval(t)
+    const timer = setInterval(fetchPending, 10000)
+    return () => clearInterval(timer)
   }, [])
 
   if (!logged) {
@@ -92,11 +95,11 @@ function App() {
   }
 
   const menuItems = [
-    { key: 'agent', icon: <RobotOutlined />, label: 'Agent 活动台' },
-    { key: 'chat', icon: <MessageOutlined />, label: '对话' },
-    { key: 'approval', icon: <SafetyOutlined />, label: '审批中心' },
-    { key: 'rules', icon: <BulbOutlined />, label: '风险规则' },
-    { key: 'kb', icon: <BookOutlined />, label: '知识库' },
+    { key: 'agent', icon: <RobotOutlined />, label: t('menu.agent') },
+    { key: 'chat', icon: <MessageOutlined />, label: t('menu.chat') },
+    { key: 'approval', icon: <SafetyOutlined />, label: t('menu.approval') },
+    { key: 'rules', icon: <BulbOutlined />, label: t('menu.rules') },
+    { key: 'kb', icon: <BookOutlined />, label: t('menu.kb') },
   ]
   const currentLabel = menuItems.find(m => m.key === tab)?.label || ''
 
@@ -119,7 +122,7 @@ function App() {
             fontWeight: 700, fontSize: collapsed ? 14 : 15,
             borderBottom: '1px solid rgba(255,255,255,0.06)',
           }}>
-            {collapsed ? 'AIOps' : 'AIOps 控制台'}
+            {collapsed ? 'AIOps' : t('app.title')}
           </div>
           <Menu
             theme={darkMode ? 'dark' : 'light'}
@@ -130,13 +133,19 @@ function App() {
           />
         </Sider>
 
-        {/* 内层 Layout 用 flex column, Header/面包屑固定高度, Content flex:1 填满 */}
         <Layout style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', height: '100%' }}>
           <Header style={{
             display: 'flex', alignItems: 'center',
             justifyContent: 'flex-end', padding: '0 24px', flexShrink: 0,
           }}>
             <Space size="large">
+              <Button
+                type="text" size="small"
+                icon={<GlobalOutlined />}
+                onClick={() => setLang(lang === 'zh' ? 'en' : 'zh')}
+              >
+                {lang === 'zh' ? 'EN' : '中文'}
+              </Button>
               <Badge count={pendingCount} size="small">
                 <BellOutlined style={{ fontSize: 18 }} />
               </Badge>
@@ -162,15 +171,13 @@ function App() {
           </Header>
 
           <div style={{ padding: '10px 24px 8px', flexShrink: 0 }}>
-            <Breadcrumb items={[{ title: '首页' }, { title: currentLabel }]} />
+            <Breadcrumb items={[{ title: t('app.home') }, { title: currentLabel }]} />
           </div>
 
-          {/* Content 用 flex:1 填满剩余空间, position:relative 让子元素 absolute 定位 */}
           <Content style={{
             flex: 1, overflow: 'hidden', padding: '12px 20px',
             position: 'relative', minHeight: 0,
           }}>
-            {/* 条件渲染: 只渲染当前标签页，切换时卸载其他组件释放内存 */}
             {tab === 'agent' && (
               <div style={{ position: 'absolute', inset: 0, display: 'flex' }}>
                 <AgentActivity />
