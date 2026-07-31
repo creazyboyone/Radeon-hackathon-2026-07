@@ -10,7 +10,7 @@ import {
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { wsManager } from '../websocket'
-import { useI18n } from '../i18n'
+import { useI18n, type Lang } from '../i18n'
 
 const { Text, Paragraph } = Typography
 
@@ -50,7 +50,7 @@ const MD_KINDS = new Set(['reasoning', 'stream_reasoning', 'assistant', 'stream_
 const TOOL_KINDS = new Set(['tool_call', 'tool_result'])
 
 
-function fmtTime(ts: number): string {
+function fmtTime(ts: number, lang: Lang): string {
   return new Date(ts * 1000).toLocaleTimeString(lang === 'zh' ? 'zh-CN' : 'en-US', { hour12: false })
 }
 
@@ -328,7 +328,7 @@ function AgentActivity() {
         style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column' }}
         styles={{ body: { flex: 1, overflow: 'hidden', minHeight: 0, padding: 0 } }}
         title={selectedSession
-          ? `${selectedSession.type === 'master' ? t('agent.master') : selectedSession.type === 'auto' ? t('agent.inspection') : selectedSession.type === 'fix' ? t('agent.fix') : t('agent.chat')} ${fmtTime(selectedSession.started_at)}`
+          ? `${selectedSession.type === 'master' ? t('agent.master') : selectedSession.type === 'auto' ? t('agent.inspection') : selectedSession.type === 'fix' ? t('agent.fix') : t('agent.chat')} ${fmtTime(selectedSession.started_at, lang)}`
           : t('agent.selectSession')}
       >
         <div ref={scrollRef} onScroll={handleScroll} className="chat-msg-list" style={{ height: '100%', overflow: 'auto', padding: '8px 16px' }}>

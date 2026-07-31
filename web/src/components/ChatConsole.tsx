@@ -13,7 +13,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { wsManager } from '../websocket'
 import { dataCache } from '../dataCache'
-import { useI18n } from '../i18n'
+import { useI18n, type Lang } from '../i18n'
 
 const { Text } = Typography
 
@@ -49,7 +49,7 @@ const EMPTY_EVENTS: AgentEvent[] = []
 
 // ---- 工具函数 ----
 
-function fmtTime(ts: number): string {
+function fmtTime(ts: number, lang: Lang): string {
   if (!ts) return ''
   return new Date(ts * 1000).toLocaleTimeString(lang === 'zh' ? 'zh-CN' : 'en-US', { hour12: false })
 }
@@ -216,7 +216,7 @@ const MessageItem = memo(({ msg, events, isProcessing }: {
   events: AgentEvent[]
   isProcessing: boolean
 }) => {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const hasEvents = events.length > 0
 
   // Extract streaming content text for building-up response display
@@ -242,7 +242,7 @@ const MessageItem = memo(({ msg, events, isProcessing }: {
         }}>
           {msg.user_msg}
           <div style={{ fontSize: 9, opacity: 0.7, marginTop: 4, textAlign: 'right' }}>
-            {fmtTime(msg.created_at)}
+            {fmtTime(msg.created_at, lang)}
           </div>
         </div>
         <div style={{
@@ -308,7 +308,7 @@ const MessageItem = memo(({ msg, events, isProcessing }: {
 
             <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', borderTop: '1px solid #1e293b', paddingTop: 6 }}>
               <span style={{ fontSize: 10, color: '#64748b' }}>
-                {msg.processed_at ? fmtTime(msg.processed_at) : ''}
+                {msg.processed_at ? fmtTime(msg.processed_at, lang) : ''}
               </span>
               {msg.session_id && (
                 <Tag color="geekblue" style={{ fontSize: 10, margin: 0, padding: '1px 6px' }}>
@@ -672,7 +672,7 @@ function ChatConsole() {
                       marginBottom: 2,
                     }}>{s.title}</div>
                     <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>
-                      {s.msg_count} {t('chat.msgs')} · {fmtTime(s.updated_at)}
+                      {s.msg_count} {t('chat.msgs')} · {fmtTime(s.updated_at, lang)}
                     </div>
                   </div>
                   <Popconfirm title={t('chat.deleteConfirm')} onConfirm={(e) => { e?.stopPropagation(); deleteSession(s.id) }} onCancel={(e) => e?.stopPropagation()}>
