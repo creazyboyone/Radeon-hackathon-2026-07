@@ -407,6 +407,11 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     localStorage.setItem('aiops_lang', lang)
+    fetch('/api/settings/lang', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lang }),
+    }).catch(() => {})
   }, [lang])
 
   const setLang = useCallback((l: Lang) => setLangState(l), [])

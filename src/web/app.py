@@ -327,6 +327,22 @@ def create_app(store) -> FastAPI:
             "created_at": row[7], "processed_at": row[8],
         }
 
+    # ---- 语言设置 (前端切换语言时同步给后端, 控制模型输出语言) ----
+
+    @app.get("/api/settings/lang")
+    def get_lang_setting():
+        from src.config import get_lang as _get_lang
+        return {"lang": _get_lang()}
+
+    @app.post("/api/settings/lang")
+    def set_lang_setting(body: dict):
+        from src.config import set_lang as _set_lang
+        lang = (body or {}).get("lang", "").strip().lower()
+        if lang not in ("zh", "en"):
+            return JSONResponse(status_code=400, content={"detail": "lang must be 'zh' or 'en'"})
+        _set_lang(lang)
+        return {"ok": True, "lang": lang}
+
     # ---- 健康检查 (Docker healthcheck / 负载均衡探活) ----
 
     @app.get("/health")

@@ -32,6 +32,16 @@ AUTONOMY = os.getenv("AUTONOMY", "supervised").lower()
 # zh: 中文
 PROMPT_LANGUAGE = os.getenv("PROMPT_LANGUAGE", "en").lower()
 
+# 运行时可变语言 (前端切换语言时通过 API 更新, 优先于 PROMPT_LANGUAGE)
+_current_lang: str = PROMPT_LANGUAGE
+
+def get_lang() -> str:
+    return _current_lang
+
+def set_lang(lang: str) -> None:
+    global _current_lang
+    _current_lang = lang.lower() if lang else _current_lang
+
 MAX_REACT_ITERATIONS = 15
 # 推理模型(reasoning_content)需要更多token: 思考过程+实际回答
 # 实测一次工具调用决策约消耗 500-1500 tokens (含reasoning)

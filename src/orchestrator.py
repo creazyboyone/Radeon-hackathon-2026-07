@@ -7,6 +7,7 @@ from .llm_client import LLMClient
 from .db import Store
 from .agent import ReActAgent
 from .tools import get_pending_alerts, get_cluster_snapshot
+from .config import get_lang
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ class Orchestrator:
         if state_card:
             prompt += f"\n上次巡检状态卡: {json.dumps(state_card, ensure_ascii=False)}"
 
-        agent = ReActAgent(self.llm, self.store, mode="auto")
+        agent = ReActAgent(self.llm, self.store, mode="auto", lang=get_lang())
         result = agent.run(prompt, parent_id=self.master_sid, trigger="cron")
 
         # 保存状态卡 (结构化快照 + 巡检摘要)
@@ -162,7 +163,7 @@ class Orchestrator:
             prompt += f"\n巡检分析: {alert['detail']}"
         prompt += "\n请诊断并修复此故障。"
 
-        agent = ReActAgent(self.llm, self.store, mode="fix")
+        agent = ReActAgent(self.llm, self.store, mode="fix", lang=get_lang())
         result = agent.run(prompt, parent_id=self.master_sid, trigger=f"alert:{alert['alertname']}")
         print(f"\n>>> [T+{elapsed}s] Fix done <<<\n")
 
@@ -212,7 +213,7 @@ class Orchestrator:
                     history = self.store.get_chat_history_by_session(chat_session_id, limit=20)
 
                 # 运行 agent (使用预创 session)
-                agent = ReActAgent(self.llm, self.store, mode="chat")
+                agent = ReActAgent(self.llm, self.store, mode="chat", lang=get_lang())
                 result = agent.run_with_history(
                     user_msg, history,
                     parent_id=self.master_sid,
