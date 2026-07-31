@@ -11,7 +11,7 @@ from src.tools import (
 )
 from src.config import (
     MAX_REACT_ITERATIONS, MAX_TOKENS, TEMPERATURE,
-    AUTONOMY, PROMPT_LANGUAGE, CLUSTER_NODES
+    AUTONOMY, PROMPT_LANGUAGE, CLUSTER_NODES, SERVICE_MAP, CLUSTER_BACKEND, HADOOP_BIN
 )
 from src.guardrails import Guardrail
 
@@ -48,7 +48,6 @@ Inspection Principles:
   * "Safe mode is ON", "Missing blocks" > 0, "Corrupt blocks" > 0 in hdfs_admin output
   * Service status not GOOD
   * ERROR/Exception/OOM/Timeout/Connection refused in logs
-  * Short process uptime (possible crash restart)
 - Flexible decisions: Prioritize batch queries, drill down when anomalies found
 - Report anomalies clearly; brief summary when healthy
 
@@ -147,7 +146,6 @@ Rules:
   * hdfs_admin 输出中的 "Safe mode is ON", "Missing blocks" > 0, "Corrupt blocks" > 0
   * 服务状态异常 (非 GOOD 状态)
   * 日志中出现 ERROR/Exception/OOM/OutOfMemory/GC overhead/Timeout/Connection refused
-  * 进程 uptime 异常短 (可能刚崩溃重启)
   * 任何不符合预期的数值或状态
 - 灵活决策: 优先使用批量查询(get_service_status all), 发现异常再针对性深入排查
 - 发现异常时: 针对性查日志和指标深入排查, 在巡检报告中明确标注异常项
@@ -241,6 +239,55 @@ Rules:
 }
 
 
+def _build_cluster_context(lang: str = "en") -> str:
+    """Build cluster context string from SERVICE_MAP + CLUSTER_NODES."""
+    from .config import (
+        CLUSTER_NODES, SERVICE_MAP, CLUSTER_BACKEND,
+        HADOOP_BIN, JPS_BIN, PROMETHEUS_URL, GRAFANA_URL,
+    )
+
+    is_ha = len(CLUSTER_NODES) >= 3
+    L = lang == "zh"
+
+    lines = []
+
+    # ---- Section 1: Environment ----
+    if L:
+        lines.append("集群运维上下文:")
+        lines.append(f"- 部署: {'Docker-compose 多节点 HA' if is_ha else '单节点直装'} ({CLUSTER_BACKEND})")
+        lines.append(f"- 节点: {', '.join(CLUSTER_NODES.keys())}")
+        lines.append(f"- Hadoop: {HADOOP_BIN} | jps: {JPS_BIN}")
+        lines.append(f"- 监控: Prometheus @ {PROMETHEUS_URL} | Grafana @ {GRAFANA_URL}")
+    else:
+        lines.append("Cluster Ops Context:")
+        lines.append(f"- Deployment: {'Docker-compose multi-node HA' if is_ha else 'Single-node direct install'} ({CLUSTER_BACKEND})")
+        lines.append(f"- Nodes: {', '.join(CLUSTER_NODES.keys())}")
+        lines.append(f"- Hadoop: {HADOOP_BIN} | jps: {JPS_BIN}")
+        lines.append(f"- Monitoring: Prometheus @ {PROMETHEUS_URL} | Grafana @ {GRAFANA_URL}")
+
+    # ---- Section 2: Service mapping table (only from SERVICE_MAP) ----
+    lines.append("")
+    if L:
+        lines.append("服务映射 (read_logs / restart_service 参数参考):")
+        lines.append(f"{'服务':<16} {'节点':<22} {'日志文件':<16} {'supervisor程序名'}")
+        lines.append("-" * 70)
+    else:
+        lines.append("Service mapping (for read_logs / restart_service):")
+        lines.append(f"{'Service':<16} {'Nodes':<22} {'Log file':<16} {'supervisor program'}")
+        lines.append("-" * 70)
+
+    for svc_name, svc_info in SERVICE_MAP.items():
+        nodes = svc_info.get("nodes", [])
+        if not nodes:
+            continue
+        log_file = svc_info.get("log_file", "-")
+        sup_prog = svc_info.get("supervisor_program", "-")
+        nodes_str = ", ".join(nodes)
+        lines.append(f"{svc_name:<16} {nodes_str:<22} {log_file:<16} {sup_prog}")
+
+    return "\n".join(lines)
+
+
 def get_prompt(mode: str, lang: Optional[str] = None) -> str:
     """Get prompt for given mode and language."""
     if lang is None:
@@ -281,6 +328,9 @@ def get_prompt(mode: str, lang: Optional[str] = None) -> str:
         prompt = prompt.replace("/JournalNode", "")
         prompt = prompt.replace("NameNode HA", "NameNode")
         prompt = prompt.replace("ResourceManager HA", "ResourceManager")
+    
+    # Inject dynamic cluster context (service-node-log mapping)
+    prompt = prompt + "\n\n" + _build_cluster_context(lang)
     
     return prompt
 
