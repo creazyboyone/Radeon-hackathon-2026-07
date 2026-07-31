@@ -456,7 +456,7 @@ def _get_service_status(service="", node=""):
     # 支持 all 参数，批量查询所有服务
     if service == "all":
         results = {}
-        for svc_name in SERVICE_MAP.keys():
+        for svc_name in INSPECT_SERVICES:
             svc_info = SERVICE_MAP[svc_name]
             if CLUSTER_BACKEND == "cdh":
                 results[svc_name] = _cdh_get_service_status(svc_info, svc_name, node)

@@ -323,7 +323,7 @@ _active_nodes = set(CLUSTER_NODES.keys())
 for _svc in SERVICE_MAP.values():
     _svc["nodes"] = [n for n in _svc["nodes"] if n in _active_nodes]
 
-# 默认巡检服务列表 (agent /auto 模式检查这些)
+# 默认巡检服务列表 (agent /auto 模式 + get_service_status(all) 都用这个)
 # 单节点模式无 JournalNode (非 HA), 自动跳过
 if CLUSTER_BACKEND == "cdh":
     INSPECT_SERVICES = [
@@ -331,11 +331,12 @@ if CLUSTER_BACKEND == "cdh":
         "HiveMetaStore", "ZooKeeper",
     ]
 else:
-    # Apache: 检查更多组件
+    # Apache: 检查全部组件
     INSPECT_SERVICES = [
         "NameNode", "DataNode", "ResourceManager", "NodeManager",
-        "HiveMetaStore", "HBaseMaster", "ZooKeeper",
+        "JobHistoryServer", "HiveMetaStore", "HiveServer2",
+        "HBaseMaster", "RegionServer", "ZooKeeper",
     ]
-    # JournalNode 仅在 HA 多节点模式下巡检
+    # JournalNode 仅在 HA 多节点模式下巡检 (单节点直装无 JN)
     if len(_active_nodes) >= 3:
         INSPECT_SERVICES.append("JournalNode")
