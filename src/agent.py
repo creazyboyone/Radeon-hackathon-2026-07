@@ -48,6 +48,7 @@ Inspection Principles:
   * "Safe mode is ON", "Missing blocks" > 0, "Corrupt blocks" > 0 in hdfs_admin output
   * Service status not GOOD
   * ERROR/Exception/OOM/Timeout/Connection refused in logs
+    Note: If service status is RUNNING + GOOD with no active alerts, log ERRORs are likely historical and should NOT be treated as anomalies
 - Flexible decisions: Prioritize batch queries, drill down when anomalies found
 - Report anomalies clearly; brief summary when healthy
 
