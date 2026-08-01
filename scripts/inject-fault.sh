@@ -23,15 +23,13 @@ header() { echo -e "\n${C_BOLD}${C_MAGENTA}════════════�
 # ============================================================
 SUPCTL="supervisorctl -c /etc/supervisor/conf.d/supervisord-hadoop01.conf"
 
-if docker exec hadoop01 echo OK >/dev/null 2>&1; then
+if command -v docker >/dev/null 2>&1 && docker exec hadoop01 echo OK >/dev/null 2>&1; then
   MODE="docker"
   DEFAULT_NODE="hadoop03"
-  EXPECTED_DN=3
   ALL_NODES=("hadoop01" "hadoop02" "hadoop03")
-elif bash -c "$SUPCTL status" >/dev/null 2>&1; then
+elif [ -S /tmp/supervisor.sock ] && jps >/dev/null 2>&1; then
   MODE="direct"
   DEFAULT_NODE="localhost"
-  EXPECTED_DN=1
   ALL_NODES=("localhost")
 else
   fail "Hadoop cluster not running"
@@ -60,14 +58,6 @@ hdfs_cmd() {
     docker exec hadoop01 bash -c "export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64; /opt/hadoop/bin/hdfs $*"
   else
     /opt/hadoop/bin/hdfs "$@"
-  fi
-}
-
-get_hdfs_report() {
-  if [ "$MODE" = "docker" ]; then
-    docker exec hadoop01 bash -c 'export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64; /opt/hadoop/bin/hdfs dfsadmin -report 2>/dev/null'
-  else
-    /opt/hadoop/bin/hdfs dfsadmin -report 2>/dev/null
   fi
 }
 
@@ -100,7 +90,7 @@ inject_regionserver_stop() {
   local node="${1:-$DEFAULT_NODE}"
   header "Inject: HBase RegionServer STOP on $node"
   log "Stopping HBase RegionServer on $node..."
-  supervisor_action "$node" stop hbase-regionserver 2>/dev/null || true
+  supervisor_action "$node" stop regionserver 2>/dev/null || true
   verify_stopped "$node" "HRegionServer" "HRegionServer"
 }
 
@@ -138,7 +128,8 @@ inject_hiveserver2_oom() {
 
   log "Step 2: Start HS2 manually with 128MB heap..."
   cluster_exec "$node" bash -c '
-    export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
+    export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+    export HADOOP_HOME=/opt/hadoop
     export HADOOP_HEAPSIZE=128
     export HADOOP_HEAPSIZE_MAX=128
     export HADOOP_OPTS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-0.20.0.jar=10111:/opt/jmx-exporter/config.yml -Xmx128m"
@@ -150,7 +141,11 @@ inject_hiveserver2_oom() {
   cluster_exec "$node" bash -c 'ps aux | grep hiveserver2 | grep -v grep | grep -o "\-Xmx[0-9]*[mMgG]" | head -1'
 
   log "Step 4: Prepare test data if not exists..."
-  cluster_exec hadoop01 bash -c '
+  cluster_exec "$node" bash -c '
+    export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+    export HADOOP_HOME=/opt/hadoop
+    export HADOOP_OPTS="--enable-preview --enable-native-access=ALL-UNNAMED"
+    export TERM=dumb
     /opt/hadoop/bin/hdfs dfs -test -d /user/hive/warehouse/aiopstest.db/bigdata_ext 2>/dev/null || {
       echo "Generating 2M row CSV..."
       seq 1 2000000 | awk -F, '\''BEGIN{OFS=","}{print $1, "user_"$1, "data_payload_"$1"_padding_xxxxx"}'\'' > /tmp/bigdata.csv
@@ -169,6 +164,10 @@ BEELINE
 
   log "Step 5: Run SELECT * to trigger OOM..."
   cluster_exec "$node" bash -c '
+    export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+    export HADOOP_HOME=/opt/hadoop
+    export HADOOP_OPTS="--enable-preview --enable-native-access=ALL-UNNAMED"
+    export TERM=dumb
     cat > /tmp/hive_oom_trigger.sql << "SQLEOF"
 USE aiopstest;
 SET hive.fetch.task.conversion=none;
@@ -188,7 +187,7 @@ inject_hbase_master_stop() {
   local node="${1:-$DEFAULT_NODE}"
   header "Inject: HBase Master STOP on $node"
   log "Stopping HBase Master on $node..."
-  supervisor_action "$node" stop hbase-master 2>/dev/null || true
+  supervisor_action "$node" stop hmaster 2>/dev/null || true
   verify_stopped "$node" "HMaster" "HBase Master"
 }
 
@@ -352,74 +351,6 @@ run_inject() {
 }
 
 # ============================================================
-# Verify + Report
-# ============================================================
-verify_and_report() {
-  header "Verify cluster recovery"
-
-  # Check if DataNode process is alive (works for most fault types)
-  local dn_alive=false
-  local dn_status=0
-  local i
-
-  for i in $(seq 1 6); do
-    local cnt
-    cnt=$(get_jps "$DEFAULT_NODE" | grep -c "DataNode" || true)
-    if [ "$cnt" -gt 0 ]; then
-      dn_alive=true
-      dn_status=$(get_hdfs_report | grep "Live datanodes" | grep -o '[0-9]*' || true)
-      dn_status=${dn_status:-0}
-      if [ "$dn_status" -ge "$EXPECTED_DN" ]; then
-        break
-      fi
-    fi
-    log "Waiting for recovery... (attempt $i/6, dn_proc=$cnt, live_dn=$dn_status)"
-    sleep 10
-  done
-
-  if [ "$dn_alive" = true ] && [ "$dn_status" -ge "$EXPECTED_DN" ]; then
-    ok "HDFS DataNode: $dn_status/$EXPECTED_DN online"
-  elif [ "$dn_alive" = true ]; then
-    warn "DataNode process running but HDFS reports $dn_status/$EXPECTED_DN live (registration may be delayed)"
-  else
-    fail "DataNode not running ($EXPECTED_DN expected)"
-  fi
-
-  # ---- Agent repair records ----
-  header "Agent repair records"
-
-  log "Recent fix sessions:"
-  curl -s http://127.0.0.1:8000/api/sessions?type=fix 2>/dev/null | \
-    python3 -c "
-import sys, json
-sessions = json.load(sys.stdin)
-for s in sessions[:3]:
-    status = s.get('status','?')
-    sid = s.get('id','?')[:8]
-    trigger = s.get('trigger','?')
-    print(f'  [{status}] {sid} trigger={trigger}')
-" 2>/dev/null || log "  (query failed, view in web console)"
-
-  log ""
-  log "Recent audit log (tool calls):"
-  curl -s 'http://127.0.0.1:8000/api/audit?limit=5' 2>/dev/null | \
-    python3 -c "
-import sys, json
-logs = json.load(sys.stdin)
-for a in logs:
-    tool = a.get('tool_name','?')
-    status = a.get('status','?')
-    risk = a.get('risk_level','?')
-    print(f'  [{status}] {tool} (risk={risk})')
-" 2>/dev/null || log "  (query failed, view in web console)"
-
-  header "Done"
-  echo -e "  ${C_GREEN}Result: cluster recovered, $dn_status/$EXPECTED_DN DataNode online${NC}"
-  echo -e "  ${C_BOLD}View full ReAct timeline at: $(agent_url)${NC}"
-  echo ""
-}
-
-# ============================================================
 # Main loop
 # ============================================================
 header "AIOps Fault Injection Tool"
@@ -456,28 +387,10 @@ while true; do
   # Inject
   run_inject "$choice"
 
-  # Wait for user to observe
+  # Wait for user to observe, then back to main menu
   echo ""
   log "Fault injected. Watch Agent activity in the web console:"
   echo -e "  ${C_BOLD}$(agent_url)${NC}"
   echo ""
-  read -rp "Press Enter when ready to continue..."
-
-  # Post-injection menu
-  while true; do
-    echo ""
-    echo -e "  ${C_BOLD}1)${NC} Inject another fault"
-    echo -e "  ${C_BOLD}2)${NC} Verify cluster recovery + show Agent repair records"
-    echo -e "  ${C_BOLD}0)${NC} Exit"
-    echo ""
-    read -rp "  Choice [1]: " post_choice
-    post_choice="${post_choice:-1}"
-
-    case "$post_choice" in
-      1) break ;;  # back to main menu
-      2) verify_and_report; break ;;
-      0) log "Bye!"; exit 0 ;;
-      *) warn "Invalid choice" ;;
-    esac
-  done
+  read -rp "Press Enter to continue..."
 done
