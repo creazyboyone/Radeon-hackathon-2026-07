@@ -442,81 +442,94 @@ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
 command=/opt/zookeeper/bin/zkServer.sh start-foreground
 environment=SERVER_JVMFLAGS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-0.20.0.jar=10109:/opt/jmx-exporter/config.yml"
 autostart=true ; autorestart=false ; startsecs=3  ; priority=10
-stdout_logfile=/logs/zk.log  ; stderr_logfile=/logs/zk.err
+stdout_logfile=/logs/zk.log
+redirect_stderr=true
 
 [program:datanode]
 command=/opt/hadoop/bin/hdfs datanode
 environment=HADOOP_DATANODE_OPTS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-0.20.0.jar=10102:/opt/jmx-exporter/config.yml",JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64",HADOOP_HEAPSIZE_MAX="256"
 autostart=true ; autorestart=false ; startsecs=3  ; priority=30
-stdout_logfile=/logs/dn.log  ; stderr_logfile=/logs/dn.err
+stdout_logfile=/logs/dn.log
+redirect_stderr=true
 
 [program:nodemanager]
 command=/opt/hadoop/bin/yarn nodemanager
 environment=YARN_NODEMANAGER_OPTS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-0.20.0.jar=10105:/opt/jmx-exporter/config.yml",JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64"
 autostart=true ; autorestart=false ; startsecs=3  ; priority=40
-stdout_logfile=/logs/nm.log  ; stderr_logfile=/logs/nm.err
+stdout_logfile=/logs/nm.log
+redirect_stderr=true
 
 [program:namenode]
 command=/opt/hadoop/bin/hdfs namenode
 environment=HADOOP_NAMENODE_OPTS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-0.20.0.jar=10101:/opt/jmx-exporter/config.yml",JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64",HADOOP_HEAPSIZE_MAX="512"
 autostart=true ; autorestart=false ; startsecs=10 ; priority=50
-stdout_logfile=/logs/nn.log  ; stderr_logfile=/logs/nn.err
+stdout_logfile=/logs/nn.log
+redirect_stderr=true
 
 [program:resourcemanager]
 command=/opt/hadoop/bin/yarn resourcemanager
 environment=YARN_RESOURCEMANAGER_OPTS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-0.20.0.jar=10104:/opt/jmx-exporter/config.yml",JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64",HADOOP_HEAPSIZE_MAX="512"
 autostart=true ; autorestart=false ; startsecs=10 ; priority=60
-stdout_logfile=/logs/rm.log  ; stderr_logfile=/logs/rm.err
+stdout_logfile=/logs/rm.log
+redirect_stderr=true
 
 [program:historyserver]
 command=/opt/hadoop/bin/mapred historyserver
 environment=HADOOP_JOB_HISTORYSERVER_OPTS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-0.20.0.jar=10106:/opt/jmx-exporter/config.yml",JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64"
 autostart=true ; autorestart=false ; startsecs=3  ; priority=70
-stdout_logfile=/logs/jhs.log ; stderr_logfile=/logs/jhs.err
+stdout_logfile=/logs/jhs.log
+redirect_stderr=true
 
 ; ---- Hive (JDK 21, autostart=false, manually start after HDFS ready) ----
 [program:hivemetastore]
 command=/opt/hive/bin/hive --service metastore
 environment=HADOOP_HEAPSIZE="256",JAVA_HOME="/usr/lib/jvm/java-21-openjdk-amd64",HADOOP_OPTS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-0.20.0.jar=10110:/opt/jmx-exporter/config.yml"
 autostart=false ; autorestart=false ; startsecs=10 ; priority=80
-stdout_logfile=/logs/hms.log  ; stderr_logfile=/logs/hms.err
+stdout_logfile=/logs/hms.log
+redirect_stderr=true
 
 [program:hiveserver2]
 command=/opt/hive/bin/hiveserver2
 environment=HADOOP_HEAPSIZE="256",JAVA_HOME="/usr/lib/jvm/java-21-openjdk-amd64",HADOOP_OPTS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-0.20.0.jar=10111:/opt/jmx-exporter/config.yml"
 autostart=false ; autorestart=false ; startsecs=10 ; priority=90
-stdout_logfile=/logs/hs2.log  ; stderr_logfile=/logs/hs2.err
+stdout_logfile=/logs/hs2.log
+redirect_stderr=true
 
 ; ---- HBase (JDK 8, matches Docker) ----
 [program:hmaster]
 command=/opt/hbase/bin/hbase master start
 environment=HBASE_MASTER_OPTS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-0.20.0.jar=10107:/opt/jmx-exporter/config.yml",HBASE_HEAPSIZE="256",JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64"
 autostart=true ; autorestart=false ; startsecs=10 ; priority=100
-stdout_logfile=/logs/hm.log  ; stderr_logfile=/logs/hm.err
+stdout_logfile=/logs/hm.log
+redirect_stderr=true
 
 [program:regionserver]
 command=/opt/hbase/bin/hbase regionserver start
 environment=HBASE_REGIONSERVER_OPTS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-0.20.0.jar=10108:/opt/jmx-exporter/config.yml",HBASE_HEAPSIZE="256",JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64"
 autostart=true ; autorestart=false ; startsecs=10 ; priority=110
-stdout_logfile=/logs/rs.log  ; stderr_logfile=/logs/rs.err
+stdout_logfile=/logs/rs.log
+redirect_stderr=true
 
 ; ---- Prometheus ----
 [program:prometheus]
 command=/opt/prometheus/prometheus --config.file=/opt/prometheus/prometheus.yml --storage.tsdb.path=/data/prometheus
 autostart=true ; autorestart=true ; startsecs=3 ; priority=120
-stdout_logfile=/logs/prometheus.log ; stderr_logfile=/logs/prometheus.err
+stdout_logfile=/logs/prometheus.log
+redirect_stderr=true
 
 ; ---- Grafana (after RPM install, path /usr/share/grafana) ----
 [program:grafana]
 command=/usr/share/grafana/bin/grafana server --config=/usr/share/grafana/conf/custom.ini --homepath=/usr/share/grafana
 autostart=true ; autorestart=true ; startsecs=3 ; priority=130
-stdout_logfile=/logs/grafana.log ; stderr_logfile=/logs/grafana.err
+stdout_logfile=/logs/grafana.log
+redirect_stderr=true
 
 ; ---- Alertmanager ----
 [program:alertmanager]
 command=/opt/alertmanager/alertmanager --config.file=/opt/alertmanager/alertmanager.yml --storage.path=/data/alertmanager
 autostart=true ; autorestart=true ; startsecs=3 ; priority=140
-stdout_logfile=/logs/alertmanager.log ; stderr_logfile=/logs/alertmanager.err
+stdout_logfile=/logs/alertmanager.log
+redirect_stderr=true
 SUP
 
 # Single-node: no hadoop02/03 symlinks needed (CLUSTER_NODES only has hadoop01)
