@@ -797,6 +797,7 @@ def _read_logs(service="", filter="", tail_n=50, node=""):
         "filter": filter or "none",
         "nodes_checked": len(all_results),
         "total_errors": total_errors,
+        "server_time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "results": all_results,
     }
 
