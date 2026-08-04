@@ -48,9 +48,9 @@ Inspection Principles:
   * "Safe mode is ON", "Missing blocks" > 0, "Corrupt blocks" > 0 in hdfs_admin output
   * Service status not GOOD
   * ERROR/Exception/OOM/Timeout/Connection refused in logs
-    IMPORTANT: read_logs returns server_time. Compare it with log timestamps to distinguish recent errors from historical ones.
-    - Recent errors (within 5 minutes of server_time): treat as active anomalies requiring investigation
-    - Historical errors (older than 5 minutes): use as context/reference only, do NOT report as current anomalies if the service is now RUNNING + GOOD
+IMPORTANT: read_logs returns server_time. Compare it with log timestamps to distinguish recent errors from historical ones.
+- If service status is RUNNING + GOOD: log errors (recent or historical) are likely non-fatal or already self-healed. Use as context only, do NOT report as current anomalies.
+- If service status is NOT GOOD (STOPPED/STARTING/etc): use server_time and log timestamps to judge which errors are relevant to the current failure. Recent errors closer to server_time are more likely to be the active cause. Historical errors are context only.
 - Flexible decisions: Prioritize batch queries, drill down when anomalies found
 - Report anomalies clearly; brief summary when healthy
 
@@ -149,9 +149,9 @@ Rules:
   * hdfs_admin 输出中的 "Safe mode is ON", "Missing blocks" > 0, "Corrupt blocks" > 0
   * 服务状态异常 (非 GOOD 状态)
   * 日志中出现 ERROR/Exception/OOM/OutOfMemory/GC overhead/Timeout/Connection refused
-    重要: read_logs 返回 server_time, 请将其与日志时间戳对比, 区分新错误和历史错误
-    - 近期错误 (距 server_time 5 分钟内): 视为活跃异常, 需要排查
-    - 历史错误 (超过 5 分钟): 仅作为上下文参考, 如果服务当前已恢复 RUNNING + GOOD, 不要报告为当前异常
+重要: read_logs 返回 server_time, 请将其与日志时间戳对比, 区分新错误和历史错误
+- 服务状态 RUNNING + GOOD 时: 日志中的 ERROR (无论新旧) 可能是非致命错误或已自愈, 仅作参考, 不要报告为当前异常
+- 服务状态非 GOOD (STOPPED/STARTING 等) 时: 根据 server_time 和日志时间戳自行判断哪些错误与当前故障相关, 越接近 server_time 的错误越可能是活跃原因, 历史错误仅作参考
   * 任何不符合预期的数值或状态
 - 灵活决策: 优先使用批量查询(get_service_status all), 发现异常再针对性深入排查
 - 发现异常时: 针对性查日志和指标深入排查, 在巡检报告中明确标注异常项
