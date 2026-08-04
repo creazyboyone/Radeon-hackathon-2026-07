@@ -32,30 +32,108 @@ elif [ -S /tmp/supervisor.sock ] && jps >/dev/null 2>&1; then
   DEFAULT_NODE="localhost"
   ALL_NODES=("localhost")
 else
+  # Try remote SSH mode: read config from secrets_local.py
+  REMOTE_INFO=$(python3 -c "
+import os, sys
+sys.path.insert(0, '$PROJ_DIR/src')
+try:
+    import secrets_local
+except ImportError:
+    sys.exit(0)
+host = os.environ.get('NODE01_HOST', '')
+if host and host != 'localhost':
+    print(f\"{host}|{os.environ.get('NODE01_SSH_PORT','2222')}|{os.environ.get('NODE02_SSH_PORT','2223')}|{os.environ.get('NODE03_SSH_PORT','2224')}\")
+" 2>/dev/null || true)
+  if [ -n "$REMOTE_INFO" ]; then
+    REMOTE_HOST=$(echo "$REMOTE_INFO" | cut -d'|' -f1)
+    NODE01_PORT=$(echo "$REMOTE_INFO" | cut -d'|' -f2)
+    NODE02_PORT=$(echo "$REMOTE_INFO" | cut -d'|' -f3)
+    NODE03_PORT=$(echo "$REMOTE_INFO" | cut -d'|' -f4)
+    SSH_KEY="$PROJ_DIR/deploy/config/ssh/id_rsa"
+    SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no"
+    [ -f "$SSH_KEY" ] && SSH_OPTS="$SSH_OPTS -i $SSH_KEY"
+    if ssh $SSH_OPTS -p "$NODE01_PORT" "root@$REMOTE_HOST" "echo OK" 2>/dev/null | grep -q OK; then
+      MODE="remote"
+      DEFAULT_NODE="hadoop03"
+      ALL_NODES=("hadoop01" "hadoop02" "hadoop03")
+    fi
+  fi
+fi
+
+if [ -z "${MODE:-}" ]; then
   fail "Hadoop cluster not running"
-  fail "Docker: docker compose up -d  |  Direct: bash scripts/setup-hadoop-direct.sh"
+  fail "Docker: docker compose up -d  |  Direct: bash scripts/setup-hadoop-direct.sh  |  Remote: check secrets_local.py"
   exit 1
 fi
 
 # ---- helpers ----
+
+# Remote mode: get SSH port for a node
+_node_ssh_port() {
+  case "$1" in
+    hadoop01) echo "${NODE01_PORT:-2222}" ;;
+    hadoop02) echo "${NODE02_PORT:-2223}" ;;
+    hadoop03) echo "${NODE03_PORT:-2224}" ;;
+    *) echo "22" ;;
+  esac
+}
+
+# Remote mode: SSH to a node and execute command
+_remote_ssh() {
+  local node="$1"; shift
+  local port=$(_node_ssh_port "$node")
+  ssh $SSH_OPTS -p "$port" "root@$REMOTE_HOST" "$@"
+}
+
 cluster_exec() {
   local node="$1"; shift
-  if [ "$MODE" = "docker" ]; then docker exec "$node" "$@"; else "$@"; fi
+  if [ "$MODE" = "docker" ]; then
+    docker exec "$node" "$@"
+  elif [ "$MODE" = "remote" ]; then
+    local port=$(_node_ssh_port "$node")
+    local cmd=""
+    for arg in "$@"; do
+      printf -v q '%q' "$arg"
+      cmd+=" $q"
+    done
+    cmd="${cmd# }"
+    ssh $SSH_OPTS -p "$port" "root@$REMOTE_HOST" "$cmd"
+  else
+    "$@"
+  fi
 }
 
 supervisor_action() {
   local node="$1" action="$2" program="$3"
-  if [ "$MODE" = "docker" ]; then docker exec "$node" supervisorctl "$action" "$program"; else $SUPCTL "$action" "$program"; fi
+  if [ "$MODE" = "docker" ]; then
+    docker exec "$node" supervisorctl "$action" "$program"
+  elif [ "$MODE" = "remote" ]; then
+    local port=$(_node_ssh_port "$node")
+    local sup_conf="/etc/supervisor/conf.d/supervisord-${node}.conf"
+    ssh $SSH_OPTS -p "$port" "root@$REMOTE_HOST" "supervisorctl -c $sup_conf $action $program 2>&1"
+  else
+    $SUPCTL "$action" "$program"
+  fi
 }
 
 get_jps() {
   local node="$1"
-  if [ "$MODE" = "docker" ]; then docker exec "$node" jps 2>/dev/null; else /usr/bin/jps 2>/dev/null; fi
+  if [ "$MODE" = "docker" ]; then
+    docker exec "$node" jps 2>/dev/null
+  elif [ "$MODE" = "remote" ]; then
+    local port=$(_node_ssh_port "$node")
+    ssh $SSH_OPTS -p "$port" "root@$REMOTE_HOST" "jps 2>/dev/null"
+  else
+    /usr/bin/jps 2>/dev/null
+  fi
 }
 
 hdfs_cmd() {
   if [ "$MODE" = "docker" ]; then
     docker exec hadoop01 bash -c "export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64; /opt/hadoop/bin/hdfs $*"
+  elif [ "$MODE" = "remote" ]; then
+    local port=$(_node_ssh_port "hadoop01")
+    ssh $SSH_OPTS -p "$port" "root@$REMOTE_HOST" "export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64; /opt/hadoop/bin/hdfs $*"
   else
     /opt/hadoop/bin/hdfs "$@"
   fi
@@ -122,25 +200,18 @@ inject_hiveserver2_oom() {
   local node="${1:-$DEFAULT_NODE}"
   header "Inject: HiveServer2 OOM on $node"
 
-  log "Step 1: Stop HS2 via supervisord..."
-  supervisor_action "$node" stop hiveserver2 2>/dev/null || true
-  sleep 3
+  # --- No stop, no config change: let HS2 crash from memory pressure ---
+  log "Step 1: Verify HS2 is running..."
+  local sup_status pid
+  sup_status=$(supervisor_action "$node" status hiveserver2 2>/dev/null | awk '{print $2}' || echo "UNKNOWN")
+  if [ "$sup_status" != "RUNNING" ]; then
+    warn "HiveServer2 is $sup_status (not RUNNING), cannot inject OOM"
+    return 1
+  fi
+  pid=$(cluster_exec "$node" bash -c "ps aux | grep -v grep | grep hiveserver2 | awk '{print \$2}' | head -1" | tr -d '\r\n ')
+  ok "HiveServer2 RUNNING (PID: $pid, supervisord-managed, no config change)"
 
-  log "Step 2: Start HS2 manually with 128MB heap..."
-  cluster_exec "$node" bash -c '
-    export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-    export HADOOP_HOME=/opt/hadoop
-    export HADOOP_HEAPSIZE=128
-    export HADOOP_HEAPSIZE_MAX=128
-    export HADOOP_OPTS="-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-0.20.0.jar=10111:/opt/jmx-exporter/config.yml -Xmx128m"
-    nohup /opt/hive/bin/hiveserver2 > /logs/hs2_oom.log 2>&1 &
-    echo "HS2 PID: $!"
-  '
-  sleep 10
-  log "Step 3: Verify heap is 128MB..."
-  cluster_exec "$node" bash -c 'ps aux | grep hiveserver2 | grep -v grep | grep -o "\-Xmx[0-9]*[mMgG]" | head -1'
-
-  log "Step 4: Prepare test data if not exists..."
+  log "Step 2: Prepare test data if not exists..."
   cluster_exec "$node" bash -c '
     export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
     export HADOOP_HOME=/opt/hadoop
@@ -162,8 +233,31 @@ BEELINE
     }
   '
 
-  log "Step 5: Run SELECT * to trigger OOM..."
+  log "Step 3: Fill system memory + concurrent heavy queries to trigger OOM..."
+  log "  (HS2 stays running — no stop, no config change, pure memory pressure)"
   cluster_exec "$node" bash -c '
+    # 1) Background: consume system RAM to starve HS2 JVM
+    python3 -c "
+import ctypes, sys, time
+try:
+    with open(\"/proc/self/oom_score_adj\", \"w\") as f:
+        f.write(\"-1000\")
+except:
+    pass
+chunks = []
+try:
+    while True:
+        buf = (ctypes.c_char * (128*1024*1024))()
+        chunks.append(buf)
+        sys.stderr.write(f\"Allocated {len(chunks)*128}MB\n\")
+except (MemoryError, OSError):
+    sys.stderr.write(\"System memory exhausted, holding 60s...\n\")
+time.sleep(60)
+" &
+    STRESS_PID=$!
+    sleep 3
+
+    # 2) Launch concurrent beeline queries to exhaust HS2 heap
     export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
     export HADOOP_HOME=/opt/hadoop
     export HADOOP_OPTS="--enable-preview --enable-native-access=ALL-UNNAMED"
@@ -173,14 +267,37 @@ USE aiopstest;
 SET hive.fetch.task.conversion=none;
 SELECT * FROM bigdata_ext;
 SQLEOF
-    /opt/hive/bin/beeline -u "jdbc:hive2://localhost:10000" -n root --color=false -f /tmp/hive_oom_trigger.sql 2>&1 | tail -30
+    for i in $(seq 1 10); do
+      timeout 90 /opt/hive/bin/beeline -u "jdbc:hive2://localhost:10000" -n root --color=false -f /tmp/hive_oom_trigger.sql > /tmp/hs2_oom_$i.log 2>&1 &
+    done
+
+    # Wait for HS2 to crash (check every 5s, max 60s)
+    for i in $(seq 1 12); do
+      sleep 5
+      ps aux | grep -v grep | grep -q hiveserver2 || { echo "HS2 crashed after $((i*5))s"; break; }
+    done
+
+    # Cleanup
+    pkill -f "beeline.*hive_oom_trigger" 2>/dev/null || true
+    kill $STRESS_PID 2>/dev/null || true
+    wait 2>/dev/null || true
   '
 
-  log "Step 6: Check HS2 status..."
-  local cnt
-  cnt=$(get_jps "$node" | grep -c "HiveServer2" || true)
-  if [ "$cnt" -eq 0 ]; then ok "HiveServer2 OOM crashed"; else warn "HiveServer2 still running (OOM may not have triggered)"; fi
-  log "Check logs: /logs/hs2_oom.log"
+  sleep 3
+  log "Step 4: Check HS2 status..."
+  sup_status=$(supervisor_action "$node" status hiveserver2 2>/dev/null | awk '{print $2}' || echo "UNKNOWN")
+  if [ "$sup_status" != "RUNNING" ]; then
+    ok "HiveServer2 crashed (supervisor: $sup_status)"
+    log "OOM evidence in HS2 log (/logs/hs2.log):"
+    cluster_exec "$node" bash -c "grep -i 'OutOfMemory\|oom\|heap' /logs/hs2.log | tail -5" 2>/dev/null || true
+    log "Kernel OOM evidence (if any):"
+    cluster_exec "$node" bash -c "dmesg 2>/dev/null | grep -i 'oom\|killed' | tail -3" 2>/dev/null || true
+  else
+    warn "HiveServer2 still running (OOM may not have triggered)"
+    log "Fallback: kill HS2 process to simulate crash..."
+    [ -n "$pid" ] && cluster_exec "$node" bash -c "kill -9 $pid" 2>/dev/null || true
+    sleep 3
+  fi
 }
 
 inject_hbase_master_stop() {
@@ -222,7 +339,7 @@ inject_hdfs_corrupt() {
 
   local dn_dir="/data/hadoop/hdfs/datanode/current/BP-*/current/finalized/subdir0/subdir0"
   log "  Deleting block files on $node to simulate corruption..."
-  if [ "$MODE" = "docker" ]; then
+  if [ "$MODE" = "docker" ] || [ "$MODE" = "remote" ]; then
     cluster_exec "$node" bash -c "find $dn_dir -name 'blk_*' -type f 2>/dev/null | head -5 | xargs rm -f" 2>/dev/null || true
   else
     find $dn_dir -name 'blk_*' -type f 2>/dev/null | head -5 | xargs rm -f 2>/dev/null || true
@@ -241,7 +358,7 @@ inject_disk_fill() {
 
   local target_dir="/tmp"
   local before
-  if [ "$MODE" = "docker" ]; then
+  if [ "$MODE" = "docker" ] || [ "$MODE" = "remote" ]; then
     before=$(cluster_exec "$node" df -h / | awk 'NR==2{print $5}')
   else
     before=$(df -h / | awk 'NR==2{print $5}')
@@ -249,14 +366,14 @@ inject_disk_fill() {
   log "  Current disk usage: $before"
 
   log "  Creating 2GB temp file..."
-  if [ "$MODE" = "docker" ]; then
+  if [ "$MODE" = "docker" ] || [ "$MODE" = "remote" ]; then
     cluster_exec "$node" bash -c "dd if=/dev/zero of=${target_dir}/disk_fill_test bs=1M count=2048 2>/dev/null" || true
   else
     dd if=/dev/zero of="${target_dir}/disk_fill_test" bs=1M count=2048 2>/dev/null || true
   fi
 
   local after
-  if [ "$MODE" = "docker" ]; then
+  if [ "$MODE" = "docker" ] || [ "$MODE" = "remote" ]; then
     after=$(cluster_exec "$node" df -h / | awk 'NR==2{print $5}')
   else
     after=$(df -h / | awk 'NR==2{print $5}')
@@ -274,7 +391,7 @@ FAULT_NAMES=(
   "zookeeper_stop      Stop ZooKeeper"
   "nodemanager_stop    Stop YARN NodeManager"
   "hiveserver2_stop    Stop HiveServer2"
-  "hiveserver2_oom     HiveServer2 OOM (128MB heap + heavy query)"
+  "hiveserver2_oom     HiveServer2 OOM (memory stress + heavy query)"
   "hbase_master_stop   Stop HBase Master"
   "resourcemanager_stop Stop YARN ResourceManager"
   "hdfs_safemode       Force HDFS safe mode ON"
@@ -313,7 +430,7 @@ select_node() {
     echo "localhost"
     return
   fi
-  # Docker: ask which node
+  # Docker / Remote: ask which node
   echo ""
   echo "  Select target node:"
   local i=1
@@ -355,11 +472,13 @@ run_inject() {
 # ============================================================
 header "AIOps Fault Injection Tool"
 log "Cluster mode: $MODE"
-if [ "$MODE" = "docker" ]; then
+if [ "$MODE" = "direct" ]; then
+  log "Single-node install"
+else
   log "Nodes: ${ALL_NODES[*]}"
   log "Default fault target: $DEFAULT_NODE"
-else
-  log "Single-node install"
+  [ "$MODE" = "remote" ] && log "Remote host: $REMOTE_HOST (ports: $NODE01_PORT/$NODE02_PORT/$NODE03_PORT)"
+  [ "$MODE" = "docker" ] && log "Docker containers: ${ALL_NODES[*]}"
 fi
 echo ""
 
