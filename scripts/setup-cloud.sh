@@ -82,6 +82,15 @@ echo ""
 echo "===== Step 2/6: Model download + start llama-server ====="
 bash scripts/bootstrap.sh
 
+# After bootstrap.sh, detect the actual API key from the running llama-server.
+# This prevents key mismatch when llama-server was already running from a previous
+# bootstrap (bootstrap.sh skips restart if already running, but we generated a new key).
+ACTUAL_API_KEY=$(pgrep -af llama-server 2>/dev/null | grep -oP '(?<=--api-key )\S+' | head -1 || true)
+if [ -n "$ACTUAL_API_KEY" ]; then
+  export LLAMA_API_KEY="$ACTUAL_API_KEY"
+  export LLM_API_KEY="$ACTUAL_API_KEY"
+fi
+
 # ============================================================
 # Step 3: Hadoop cluster setup
 # ============================================================
@@ -220,9 +229,13 @@ EOF
   echo "  secrets_local.py generated (remote HA: $REMOTE_HOST)"
 fi
 
-# Stop old agent if running
+# Stop old agent if running and wait for port to be released
 pkill -f "python.*main.py" 2>/dev/null || true
-sleep 1
+for i in $(seq 1 10); do
+  pgrep -f "python.*main.py" >/dev/null 2>&1 || break
+  sleep 1
+done
+sleep 1  # extra wait for port release
 
 # Start agent
 echo "  Agent starting..."

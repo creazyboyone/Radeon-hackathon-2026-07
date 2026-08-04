@@ -233,54 +233,33 @@ BEELINE
     }
   '
 
-  log "Step 3: Fill system memory + concurrent heavy queries to trigger OOM..."
-  log "  (HS2 stays running — no stop, no config change, pure memory pressure)"
+  log "Step 3: Launch concurrent heavy queries to exhaust HS2 heap..."
+  log "  (HS2 stays running — no stop, no config change, pure SQL-driven OOM)"
   cluster_exec "$node" bash -c '
-    # 1) Background: consume system RAM to starve HS2 JVM
-    python3 -c "
-import ctypes, sys, time
-try:
-    with open(\"/proc/self/oom_score_adj\", \"w\") as f:
-        f.write(\"-1000\")
-except:
-    pass
-chunks = []
-try:
-    while True:
-        buf = (ctypes.c_char * (128*1024*1024))()
-        chunks.append(buf)
-        sys.stderr.write(f\"Allocated {len(chunks)*128}MB\n\")
-except (MemoryError, OSError):
-    sys.stderr.write(\"System memory exhausted, holding 60s...\n\")
-time.sleep(60)
-" &
-    STRESS_PID=$!
-    sleep 3
-
-    # 2) Launch concurrent beeline queries to exhaust HS2 heap
     export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
     export HADOOP_HOME=/opt/hadoop
     export HADOOP_OPTS="--enable-preview --enable-native-access=ALL-UNNAMED"
     export TERM=dumb
+
+    # Heavy SQL: multiple large result-set queries + cross joins to blow up HS2 heap
     cat > /tmp/hive_oom_trigger.sql << "SQLEOF"
 USE aiopstest;
 SET hive.fetch.task.conversion=none;
-SELECT * FROM bigdata_ext;
+-- Force HS2 to buffer massive result sets in memory
+SELECT t1.id, t1.payload, t2.payload FROM bigdata_ext t1 JOIN bigdata_ext t2 ON t1.id = t2.id;
+SELECT COUNT(*) FROM (SELECT a.id, b.id FROM bigdata_ext a CROSS JOIN bigdata_ext b) t;
 SQLEOF
-    for i in $(seq 1 10); do
-      timeout 90 /opt/hive/bin/beeline -u "jdbc:hive2://localhost:10000" -n root --color=false -f /tmp/hive_oom_trigger.sql > /tmp/hs2_oom_$i.log 2>&1 &
+
+    # Launch 15 concurrent queries to exhaust HS2 heap
+    for i in $(seq 1 15); do
+      timeout 120 /opt/hive/bin/beeline -u "jdbc:hive2://localhost:10000" -n root --color=false -f /tmp/hive_oom_trigger.sql > /tmp/hs2_oom_$i.log 2>&1 &
     done
 
-    # Wait for HS2 to crash (check every 5s, max 60s)
-    for i in $(seq 1 12); do
+    # Wait for HS2 to crash (check every 5s, max 120s)
+    for i in $(seq 1 24); do
       sleep 5
       ps aux | grep -v grep | grep -q hiveserver2 || { echo "HS2 crashed after $((i*5))s"; break; }
     done
-
-    # Cleanup
-    pkill -f "beeline.*hive_oom_trigger" 2>/dev/null || true
-    kill $STRESS_PID 2>/dev/null || true
-    wait 2>/dev/null || true
   '
 
   sleep 3
@@ -290,13 +269,9 @@ SQLEOF
     ok "HiveServer2 crashed (supervisor: $sup_status)"
     log "OOM evidence in HS2 log (/logs/hs2.log):"
     cluster_exec "$node" bash -c "grep -i 'OutOfMemory\|oom\|heap' /logs/hs2.log | tail -5" 2>/dev/null || true
-    log "Kernel OOM evidence (if any):"
-    cluster_exec "$node" bash -c "dmesg 2>/dev/null | grep -i 'oom\|killed' | tail -3" 2>/dev/null || true
   else
-    warn "HiveServer2 still running (OOM may not have triggered)"
-    log "Fallback: kill HS2 process to simulate crash..."
-    [ -n "$pid" ] && cluster_exec "$node" bash -c "kill -9 $pid" 2>/dev/null || true
-    sleep 3
+    warn "HiveServer2 still running (OOM may not have triggered within timeout)"
+    log "Agent should still detect the heavy query load and investigate"
   fi
 }
 
@@ -431,22 +406,31 @@ select_node() {
     return
   fi
   # Docker / Remote: ask which node
-  echo ""
-  echo "  Select target node:"
-  local i=1
-  for n in "${ALL_NODES[@]}"; do
-    printf "  ${C_BOLD}%d)${NC} %s\n" "$i" "$n"
-    ((i++))
-  done
-  echo -e "  ${C_BOLD}0)${NC} Use default ($DEFAULT_NODE)"
-  echo ""
+  # NOTE: all prompts go to stderr so stdout only returns the chosen node name
+  {
+    echo ""
+    echo "  Select target node:"
+    local i=1
+    for n in "${ALL_NODES[@]}"; do
+      printf "  ${C_BOLD}%d)${NC} %s\n" "$i" "$n"
+      ((i++))
+    done
+    echo -e "  ${C_BOLD}0)${NC} Use default ($DEFAULT_NODE)"
+    echo ""
+  } >&2
+  local choice
   read -rp "  Choice [0]: " choice
   if [ -z "$choice" ] || [ "$choice" = "0" ]; then
     echo "$DEFAULT_NODE"
   elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#ALL_NODES[@]}" ]; then
     echo "${ALL_NODES[$((choice-1))]}"
   else
-    echo "$DEFAULT_NODE"
+    # Allow typing node name directly (e.g. "hadoop03")
+    local match=""
+    for n in "${ALL_NODES[@]}"; do
+      [ "$n" = "$choice" ] && match="$n" && break
+    done
+    echo "${match:-$DEFAULT_NODE}"
   fi
 }
 
@@ -461,6 +445,13 @@ run_inject() {
       $func
       ;;
     *)
+      # Override default node for services that don't run on worker nodes
+      case "$func" in
+        inject_hiveserver2_stop|inject_hiveserver2_oom|inject_hbase_master_stop|inject_resourcemanager_stop)
+          # These services run on hadoop01/hadoop02, not on hadoop03
+          DEFAULT_NODE="hadoop02"
+          ;;
+      esac
       node=$(select_node)
       $func "$node"
       ;;
