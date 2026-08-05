@@ -20,7 +20,7 @@ aiops.db
 log.txt
 opencode.txt
 
-# Secrets (本地秘密配置, 不提交)
+# Secrets (local secret config, do not commit)
 secrets_local.py
 secrets_local.*
 
@@ -31,8 +31,6 @@ secrets_local.*
 *.swo
 *~
 
-# Local tooling (Claude Code 会话状态/计划, 本地仅)
-.claude/
 
 # OS
 .DS_Store
