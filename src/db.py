@@ -620,7 +620,7 @@ class Store:
 
     # ---- chat_sessions + chat_messages (多 session 对话式运维) ----
 
-    def create_chat_session(self, title: str = "新对话") -> dict:
+    def create_chat_session(self, title: str = "New Chat") -> dict:
         """创建新的 chat session"""
         sid = str(uuid.uuid4())[:8]
         now = int(time.time())

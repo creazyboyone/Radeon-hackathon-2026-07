@@ -276,7 +276,7 @@ def create_app(store) -> FastAPI:
     @app.post("/api/chat/sessions")
     def create_chat_session(body: dict = None):
         """创建新的 chat session"""
-        title = (body or {}).get("title", "新对话")
+        title = (body or {}).get("title", "New Chat")
         return store.create_chat_session(title)
 
     @app.delete("/api/chat/sessions/{sid}")

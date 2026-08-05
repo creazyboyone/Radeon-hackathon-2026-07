@@ -6,7 +6,7 @@ export type Lang = 'zh' | 'en'
 function detectLang(): Lang {
   const saved = localStorage.getItem('aiops_lang')
   if (saved === 'zh' || saved === 'en') return saved
-  return navigator.language.startsWith('zh') ? 'zh' : 'en'
+  return 'en'
 }
 
 const dict = {
@@ -397,8 +397,8 @@ interface I18nCtx {
 }
 
 const Ctx = createContext<I18nCtx>({
-  lang: 'zh',
-  t: (k) => dict.zh[k] || k,
+  lang: 'en',
+  t: (k) => dict.en[k] || k,
   setLang: () => {},
 })
 

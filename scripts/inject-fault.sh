@@ -52,7 +52,7 @@ if host and host != 'localhost':
     SSH_KEY="$PROJ_DIR/deploy/config/ssh/id_rsa"
     SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no"
     [ -f "$SSH_KEY" ] && SSH_OPTS="$SSH_OPTS -i $SSH_KEY"
-    if ssh $SSH_OPTS -p "$NODE01_PORT" "root@$REMOTE_HOST" "echo OK" 2>/dev/null | grep -q OK; then
+    if ssh $SSH_OPTS -p "$NODE01_PORT" "root@$REMOTE_HOST" "echo OK" </dev/null 2>/dev/null | grep -q OK; then
       MODE="remote"
       DEFAULT_NODE="hadoop03"
       ALL_NODES=("hadoop01" "hadoop02" "hadoop03")
@@ -82,7 +82,7 @@ _node_ssh_port() {
 _remote_ssh() {
   local node="$1"; shift
   local port=$(_node_ssh_port "$node")
-  ssh $SSH_OPTS -p "$port" "root@$REMOTE_HOST" "$@"
+  ssh $SSH_OPTS -p "$port" "root@$REMOTE_HOST" "$@" </dev/null
 }
 
 cluster_exec() {
@@ -97,7 +97,7 @@ cluster_exec() {
       cmd+=" $q"
     done
     cmd="${cmd# }"
-    ssh $SSH_OPTS -p "$port" "root@$REMOTE_HOST" "$cmd"
+    ssh $SSH_OPTS -p "$port" "root@$REMOTE_HOST" "$cmd" </dev/null
   else
     "$@"
   fi
@@ -110,7 +110,7 @@ supervisor_action() {
   elif [ "$MODE" = "remote" ]; then
     local port=$(_node_ssh_port "$node")
     local sup_conf="/etc/supervisor/conf.d/supervisord-${node}.conf"
-    ssh $SSH_OPTS -p "$port" "root@$REMOTE_HOST" "supervisorctl -c $sup_conf $action $program 2>&1"
+    ssh $SSH_OPTS -p "$port" "root@$REMOTE_HOST" "supervisorctl -c $sup_conf $action $program 2>&1" </dev/null
   else
     $SUPCTL "$action" "$program"
   fi
@@ -122,7 +122,7 @@ get_jps() {
     docker exec "$node" jps 2>/dev/null
   elif [ "$MODE" = "remote" ]; then
     local port=$(_node_ssh_port "$node")
-    ssh $SSH_OPTS -p "$port" "root@$REMOTE_HOST" "jps 2>/dev/null"
+    ssh $SSH_OPTS -p "$port" "root@$REMOTE_HOST" "jps 2>/dev/null" </dev/null
   else
     /usr/bin/jps 2>/dev/null
   fi
@@ -133,7 +133,7 @@ hdfs_cmd() {
     docker exec hadoop01 bash -c "export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64; /opt/hadoop/bin/hdfs $*"
   elif [ "$MODE" = "remote" ]; then
     local port=$(_node_ssh_port "hadoop01")
-    ssh $SSH_OPTS -p "$port" "root@$REMOTE_HOST" "export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64; /opt/hadoop/bin/hdfs $*"
+    ssh $SSH_OPTS -p "$port" "root@$REMOTE_HOST" "export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64; /opt/hadoop/bin/hdfs $*" </dev/null
   else
     /opt/hadoop/bin/hdfs "$@"
   fi
@@ -200,7 +200,6 @@ inject_hiveserver2_oom() {
   local node="${1:-$DEFAULT_NODE}"
   header "Inject: HiveServer2 OOM on $node"
 
-  # --- No stop, no config change: let HS2 crash from memory pressure ---
   log "Step 1: Verify HS2 is running..."
   local sup_status pid
   sup_status=$(supervisor_action "$node" status hiveserver2 2>/dev/null | awk '{print $2}' || echo "UNKNOWN")
@@ -209,68 +208,93 @@ inject_hiveserver2_oom() {
     return 1
   fi
   pid=$(cluster_exec "$node" bash -c "ps aux | grep -v grep | grep hiveserver2 | awk '{print \$2}' | head -1" | tr -d '\r\n ')
-  ok "HiveServer2 RUNNING (PID: $pid, supervisord-managed, no config change)"
+  ok "HiveServer2 RUNNING (PID: $pid)"
 
-  log "Step 2: Prepare test data if not exists..."
+  log "Step 2: Deploy JDBC client tools to container..."
+  # Upload HiveOOMTrigger.java and compile it inside the container
+  local script_dir="$PROJ_DIR/scripts"
+  if [ -f "$script_dir/HiveOOMTrigger.java" ]; then
+    if [ "$MODE" = "docker" ]; then
+      docker cp "$script_dir/HiveOOMTrigger.java" "$node:/tmp/HiveOOMTrigger.java"
+      docker cp "$script_dir/HiveQuery.java" "$node:/tmp/HiveQuery.java" 2>/dev/null || true
+    elif [ "$MODE" = "remote" ]; then
+      local port=$(_node_ssh_port "$node")
+      scp $SSH_OPTS -P "$port" "$script_dir/HiveOOMTrigger.java" "root@$REMOTE_HOST:/tmp/HiveOOMTrigger.java"
+      scp $SSH_OPTS -P "$port" "$script_dir/HiveQuery.java" "root@$REMOTE_HOST:/tmp/HiveQuery.java" 2>/dev/null || true
+    else
+      cp "$script_dir/HiveOOMTrigger.java" /tmp/HiveOOMTrigger.java
+      cp "$script_dir/HiveQuery.java" /tmp/HiveQuery.java 2>/dev/null || true
+    fi
+  fi
+  cluster_exec "$node" bash -c 'cd /tmp && /usr/lib/jvm/java-21-openjdk-amd64/bin/javac HiveOOMTrigger.java 2>&1 && /usr/lib/jvm/java-21-openjdk-amd64/bin/javac HiveQuery.java 2>&1 || true'
+
+  log "Step 3: Ensure test data exists..."
   cluster_exec "$node" bash -c '
     export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
     export HADOOP_HOME=/opt/hadoop
-    export HADOOP_OPTS="--enable-preview --enable-native-access=ALL-UNNAMED"
-    export TERM=dumb
     /opt/hadoop/bin/hdfs dfs -test -d /user/hive/warehouse/aiopstest.db/bigdata_ext 2>/dev/null || {
       echo "Generating 2M row CSV..."
       seq 1 2000000 | awk -F, '\''BEGIN{OFS=","}{print $1, "user_"$1, "data_payload_"$1"_padding_xxxxx"}'\'' > /tmp/bigdata.csv
       /opt/hadoop/bin/hdfs dfs -mkdir -p /user/hive/warehouse/aiopstest.db/bigdata_ext
       /opt/hadoop/bin/hdfs dfs -put -f /tmp/bigdata.csv /user/hive/warehouse/aiopstest.db/bigdata_ext/
-      /opt/hive/bin/beeline -u "jdbc:hive2://localhost:10000" -n root --color=false << "BEELINE"
-        CREATE DATABASE IF NOT EXISTS aiopstest;
-        USE aiopstest;
-        CREATE EXTERNAL TABLE IF NOT EXISTS bigdata_ext (id int, name string, payload string)
-        ROW FORMAT DELIMITED FIELDS TERMINATED BY ","
-        STORED AS TEXTFILE
-        LOCATION "/user/hive/warehouse/aiopstest.db/bigdata_ext";
-BEELINE
     }
+    # Create database/table via JDBC (bypasses broken beeline)
+    CP="$HADOOP_HOME/etc/hadoop:$HADOOP_HOME/share/hadoop/common/lib/*:$HADOOP_HOME/share/hadoop/common/*:/opt/hive/lib/*"
+    $JAVA_HOME/bin/java --enable-preview --enable-native-access=ALL-UNNAMED \
+      --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/java.net=ALL-UNNAMED \
+      --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED \
+      --add-opens java.base/java.util.concurrent=ALL-UNNAMED --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED \
+      --add-opens java.base/java.util.regex=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED \
+      --add-opens java.base/java.io=ALL-UNNAMED \
+      -cp "/tmp:$CP" HiveQuery "CREATE DATABASE IF NOT EXISTS aiopstest" 2>/dev/null || true
+    $JAVA_HOME/bin/java --enable-preview --enable-native-access=ALL-UNNAMED \
+      --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/java.net=ALL-UNNAMED \
+      --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED \
+      --add-opens java.base/java.util.concurrent=ALL-UNNAMED --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED \
+      --add-opens java.base/java.util.regex=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED \
+      --add-opens java.base/java.io=ALL-UNNAMED \
+      -cp "/tmp:$CP" HiveQuery "CREATE EXTERNAL TABLE IF NOT EXISTS aiopstest.bigdata_ext (id int, name string, payload string) ROW FORMAT DELIMITED FIELDS TERMINATED BY \",\" STORED AS TEXTFILE LOCATION \"/user/hive/warehouse/aiopstest.db/bigdata_ext\"" 2>/dev/null || true
   '
 
-  log "Step 3: Launch concurrent heavy queries to exhaust HS2 heap..."
-  log "  (HS2 stays running — no stop, no config change, pure SQL-driven OOM)"
+  log "Step 4: Launch concurrent JOIN queries in local MR mode..."
+  log "  (No heap change, no restart — pure query-driven OOM on 512MB HS2)"
+  log "  Local MR mode → JOIN runs inside HS2 JVM → hash tables in HS2 heap"
   cluster_exec "$node" bash -c '
     export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
     export HADOOP_HOME=/opt/hadoop
-    export HADOOP_OPTS="--enable-preview --enable-native-access=ALL-UNNAMED"
-    export TERM=dumb
-
-    # Heavy SQL: multiple large result-set queries + cross joins to blow up HS2 heap
-    cat > /tmp/hive_oom_trigger.sql << "SQLEOF"
-USE aiopstest;
-SET hive.fetch.task.conversion=none;
--- Force HS2 to buffer massive result sets in memory
-SELECT t1.id, t1.payload, t2.payload FROM bigdata_ext t1 JOIN bigdata_ext t2 ON t1.id = t2.id;
-SELECT COUNT(*) FROM (SELECT a.id, b.id FROM bigdata_ext a CROSS JOIN bigdata_ext b) t;
-SQLEOF
-
-    # Launch 15 concurrent queries to exhaust HS2 heap
-    for i in $(seq 1 15); do
-      timeout 120 /opt/hive/bin/beeline -u "jdbc:hive2://localhost:10000" -n root --color=false -f /tmp/hive_oom_trigger.sql > /tmp/hs2_oom_$i.log 2>&1 &
-    done
-
-    # Wait for HS2 to crash (check every 5s, max 120s)
-    for i in $(seq 1 24); do
-      sleep 5
-      ps aux | grep -v grep | grep -q hiveserver2 || { echo "HS2 crashed after $((i*5))s"; break; }
-    done
-  '
+    export HIVE_HOME=/opt/hive
+    CP="$HADOOP_HOME/etc/hadoop:$HADOOP_HOME/share/hadoop/common/lib/*:$HADOOP_HOME/share/hadoop/common/*:$HIVE_HOME/lib/*"
+    timeout 180 $JAVA_HOME/bin/java \
+      --enable-preview --enable-native-access=ALL-UNNAMED \
+      --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/java.net=ALL-UNNAMED \
+      --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED \
+      --add-opens java.base/java.util.concurrent=ALL-UNNAMED --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED \
+      --add-opens java.base/java.util.regex=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED \
+      --add-opens java.base/java.io=ALL-UNNAMED \
+      -cp "/tmp:$CP" \
+      HiveOOMTrigger 10 \
+      2>&1 || true
+  ' 2>/dev/null || true
 
   sleep 3
-  log "Step 4: Check HS2 status..."
-  sup_status=$(supervisor_action "$node" status hiveserver2 2>/dev/null | awk '{print $2}' || echo "UNKNOWN")
-  if [ "$sup_status" != "RUNNING" ]; then
-    ok "HiveServer2 crashed (supervisor: $sup_status)"
-    log "OOM evidence in HS2 log (/logs/hs2.log):"
-    cluster_exec "$node" bash -c "grep -i 'OutOfMemory\|oom\|heap' /logs/hs2.log | tail -5" 2>/dev/null || true
+  log "Step 5: Check HS2 status and OOM evidence..."
+  local sup_status_after
+  sup_status_after=$(supervisor_action "$node" status hiveserver2 2>/dev/null | awk '{print $2}' || echo "UNKNOWN")
+
+  # Check OOM in the normal HS2 log (not a separate file)
+  local oom_evidence
+  oom_evidence=$(cluster_exec "$node" bash -c "grep -i 'OutOfMemory\|oom.*heap\|GC overhead' /logs/hs2.log | tail -10" 2>/dev/null || true)
+  if [ -n "$oom_evidence" ]; then
+    ok "HiveServer2 OOM triggered on 512MB heap!"
+    echo "$oom_evidence" | while read -r line; do log "  $line"; done
+    if [ "$sup_status_after" != "RUNNING" ]; then
+      warn "HS2 is $sup_status_after (supervisor should auto-restart)"
+    else
+      log "HS2 recovered (supervisor restarted it)"
+    fi
   else
-    warn "HiveServer2 still running (OOM may not have triggered within timeout)"
+    warn "No OOM evidence in /logs/hs2.log"
+    log "HS2 status: $sup_status_after"
     log "Agent should still detect the heavy query load and investigate"
   fi
 }
@@ -405,33 +429,58 @@ select_node() {
     echo "localhost"
     return
   fi
+  # Accept available nodes as arguments; default to ALL_NODES
+  local available_nodes=(${@:-${ALL_NODES[*]}})
+  local default_for_menu="${available_nodes[0]}"
+
+  # Auto-select if only one node available
+  if [ ${#available_nodes[@]} -eq 1 ]; then
+    log "Auto-selecting node: ${available_nodes[0]}"
+    echo "${available_nodes[0]}"
+    return
+  fi
+
   # Docker / Remote: ask which node
   # NOTE: all prompts go to stderr so stdout only returns the chosen node name
   {
     echo ""
     echo "  Select target node:"
     local i=1
-    for n in "${ALL_NODES[@]}"; do
+    for n in "${available_nodes[@]}"; do
       printf "  ${C_BOLD}%d)${NC} %s\n" "$i" "$n"
       ((i++))
     done
-    echo -e "  ${C_BOLD}0)${NC} Use default ($DEFAULT_NODE)"
+    echo -e "  ${C_BOLD}0)${NC} Use default ($default_for_menu)"
     echo ""
   } >&2
   local choice
   read -rp "  Choice [0]: " choice
   if [ -z "$choice" ] || [ "$choice" = "0" ]; then
-    echo "$DEFAULT_NODE"
-  elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#ALL_NODES[@]}" ]; then
-    echo "${ALL_NODES[$((choice-1))]}"
+    echo "$default_for_menu"
+  elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#available_nodes[@]}" ]; then
+    echo "${available_nodes[$((choice-1))]}"
   else
     # Allow typing node name directly (e.g. "hadoop03")
     local match=""
-    for n in "${ALL_NODES[@]}"; do
+    for n in "${available_nodes[@]}"; do
       [ "$n" = "$choice" ] && match="$n" && break
     done
-    echo "${match:-$DEFAULT_NODE}"
+    echo "${match:-$default_for_menu}"
   fi
+}
+
+# Get valid nodes for a fault type (based on supervisord configs)
+# hadoop01: all services  |  hadoop02: no JHS  |  hadoop03: ZK+JN+DN+NM+RS only
+_fault_nodes() {
+  local func="$1"
+  case "$func" in
+    inject_hiveserver2_stop|inject_hiveserver2_oom|inject_hbase_master_stop|inject_resourcemanager_stop)
+      echo "hadoop01 hadoop02"
+      ;;
+    *)
+      echo "${ALL_NODES[*]}"
+      ;;
+  esac
 }
 
 run_inject() {
@@ -445,14 +494,9 @@ run_inject() {
       $func
       ;;
     *)
-      # Override default node for services that don't run on worker nodes
-      case "$func" in
-        inject_hiveserver2_stop|inject_hiveserver2_oom|inject_hbase_master_stop|inject_resourcemanager_stop)
-          # These services run on hadoop01/hadoop02, not on hadoop03
-          DEFAULT_NODE="hadoop02"
-          ;;
-      esac
-      node=$(select_node)
+      local available_nodes
+      available_nodes=$(_fault_nodes "$func")
+      node=$(select_node $available_nodes)
       $func "$node"
       ;;
   esac
