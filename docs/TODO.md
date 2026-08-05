@@ -73,8 +73,7 @@
 - [x] 集群状态卡: 选中 master session 显示服务健康状态
 - [x] 流式输出: SSE + WebSocket 逐 token 推送
 - [x] 智能滚动: 用户在底部才自动滚动, 向上查看历史不打断
-- [ ] Web 前端 Grafana 跳转链接（仪表盘已配置，Web 入口待加）
-- [ ] 前端 admin 模板进一步美化
+- [x] 前端 admin 模板进一步美化
 
 ## M7 — 演示与提交
 
@@ -83,7 +82,7 @@
 - [x] DESIGN.md 英文化（英文作默认主文件，中文保留 `DESIGN_ZH.md`）
 - [x] **README 复现步骤 + 架构图** ← 已完成（实现全云部署，方便评委复现）
 - [x] 性能数据整理（tokens/s、TTFT、VRAM、故障解决耗时）
-- [ ] 文档交叉引用最终核对
+- [x] 文档交叉引用最终核对
 
 ## 缺陷修复（评审发现并已修）
 
@@ -119,7 +118,6 @@
 - [ ] **审批实时推送** — 部分完成：Header 已有 `Badge count={pendingCount}`（10s 轮询）。待补：WebSocket 主动推送（替代轮询）+ `Notification API` 弹系统通知 + Sider 菜单项 Badge
 - [ ] **Agent 进度提示** — 会话卡片上显示"迭代 3/15"+ 已耗时（如 "2m30s"），让用户知道 agent 还在跑没卡死。上限 15 轮是 ReAct 循环的硬限制，进度条让等待过程可预期
 - [ ] **工具结果友好渲染** — `read_logs` 返回的文本按日志级别着色（ERROR 红 / WARN 黄 / INFO 默认）；`get_metrics` 的 JSON 用数值卡片展示（CPU 85% / MEM 12.3G / Disk 67%），替代当前的原始 JSON 折叠块
-- [ ] **Web 前端 Grafana 跳转链接** — 仪表盘已在 Grafana 配置好 4 个面板（Cluster / HDFS / YARN / HBase+ZK），Web 集群状态页加 4 个跳转按钮或 iframe 嵌入，用户不用单独开 Grafana 页面
 - [ ] **Runbook 版本 Diff** — `write_runbook` 更新已有 runbook 时保留历史版本（`runbook_versions` 表），Web 管理页加 Diff 视图（类似 Git diff），方便审核 agent 回写的内容改了什么
 
 ### 工程规范与安全
@@ -136,7 +134,7 @@
 ### 可观测性
 
 - [ ] **时序指标趋势图** — 新增 SQLite 时序表定期记录 `get_metrics` 的 CPU/MEM/Disk 数值，Web 前端画 24h 趋势折线图。当前只能看瞬时快照，趋势图能发现"磁盘每天涨 5%"这类渐变问题
-- [x] **一键 Demo 脚本** — `scripts/demo.sh`：一键启动集群 → 等待健康 → 注入故障（kill DataNode）→ 触发 fix → 展示 Web 控制台完整闭环。评委运行一条命令即可看到完整演示效果，不用手动多步操作
+- [x] **一键 Demo 脚本** — `scripts/inject-fault.sh`：一键启动集群 → 等待健康 → 注入故障（kill DataNode）→ 触发 fix → 展示 Web 控制台完整闭环。评委运行一条命令即可看到完整演示效果，不用手动多步操作
 
 ## AMD Cloud 部署适配
 
@@ -159,10 +157,10 @@
 - [x] **统一健康检查脚本** — `scripts/healthcheck.sh`：双模式兼容（Docker 3节点 HA / 单节点直装），自动检测模式，检查进程/端口/HA状态/读写
 - [x] **所有脚本英文化** — 注释和 echo 输出全部改为英文，方便国际评委阅读
 
-### 待定（Path 2: 远程 Hadoop HA）
+### 已完成（Path 2: 远程 Hadoop HA）
 
-- [ ] **远程 Hadoop HA 集群** — 在 8.148.228.51 上搭建 Docker 3 节点 Hadoop HA 集群，AMD Cloud 通过 SSH 隧道/反向代理访问。Agent 在 AMD Cloud 上跑，SSH 连远程集群节点。需要：SSH 反向隧道或 WireGuard VPN 打通网络、agent config 指向远程 IP、Prometheus 远程采集
-- [ ] **评委复现文档** — README 写两条路径：A) 单节点直装（简快）、B) 远程 HA 集群（完整 3 节点效果）
+- [x] **远程 Hadoop HA 集群** — 在 8.148.228.51 上搭建 Docker 3 节点 Hadoop HA 集群，AMD Cloud 通过 SSH 隧道/反向代理访问。Agent 在 AMD Cloud 上跑，SSH 连远程集群节点。需要：SSH 反向隧道或 WireGuard VPN 打通网络、agent config 指向远程 IP、Prometheus 远程采集
+- [x] **评委复现文档** — README 写两条路径：A) 单节点直装（简快）、B) 远程 HA 集群（完整 3 节点效果）
 
 ## 待敲定参数
 

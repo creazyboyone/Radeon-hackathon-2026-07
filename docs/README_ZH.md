@@ -59,7 +59,7 @@ bash scripts/setup-cloud.sh
 ### 一键演示
 
 ```bash
-bash scripts/demo.sh
+bash scripts/inject-fault.sh
 ```
 
 流程: 注入故障 (kill DataNode) → 等待 Agent 检测 → 诊断 → 修复 → 验证
@@ -151,15 +151,15 @@ python3 -m main
 scripts/                    # 部署 & 演示脚本
 ├── setup-cloud.sh          # ★ 一键部署 (AMD Cloud)
 ├── setup-hadoop-direct.sh  # ★ 单节点 Hadoop 直装
-├── demo.sh                 # ★ 一键演示 (注入故障 → 修复)
+├── inject-fault.sh         # ★ 一键演示 (注入故障 → 修复)
 ├── healthcheck.sh          # 集群健康检查 (Docker/直装双模式)
 ├── build-llama.sh          # 编译 llama.cpp (ROCm)
 ├── build-frontend.sh       # 构建前端 (生产模式)
 ├── download-tarballs.sh    # 下载 Hadoop tarball
 ├── export-cluster.sh       # 导出 Docker 镜像+数据卷
 └── bootstrap.sh            # 启动 llama-server (模型下载)
+main.py                     # 入口 (FastAPI + Orchestrator)
 src/                        # Python 后端
-├── main.py                 # 入口 (FastAPI + Orchestrator)
 ├── orchestrator.py         # 常驻编排 (master session, /auto+/fix)
 ├── agent.py                # ReAct agent (巡检/修复, 流式输出)
 ├── llm_client.py           # LLM 客户端 (chat + chat_stream SSE)

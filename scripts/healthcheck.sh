@@ -46,7 +46,7 @@ echo "============================================================"
 echo ""
 
 # ============================================================
-# Cluster operation wrappers (consistent with demo.sh)
+# Cluster operation wrappers (consistent with inject-fault.sh)
 # ============================================================
 cluster_exec() {
   local node="$1"; shift

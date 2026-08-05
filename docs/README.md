@@ -157,7 +157,7 @@ Upon completion, the script prints the public URL:
 #  Agent log:     /workspace/agent.log
 #  LLM log:       /workspace/llama-server.log
 #
-#  Run demo:      bash scripts/demo.sh
+#  Run demo:      bash scripts/inject-fault.sh
 ############################################################
 ```
 
@@ -181,7 +181,7 @@ bash scripts/healthcheck.sh
 ### Step 4: Run the Demo
 
 ```bash
-bash scripts/demo.sh
+bash scripts/inject-fault.sh
 ```
 
 This script:
@@ -228,7 +228,7 @@ python3 -m main
 ## One-Click Demo
 
 ```bash
-bash scripts/demo.sh
+bash scripts/inject-fault.sh
 ```
 
 **What happens:**
@@ -343,15 +343,15 @@ Radeon-hackathon/
 ├── scripts/                     # Deployment & demo scripts
 │   ├── setup-cloud.sh           # ★ One-click deploy (AMD Cloud)
 │   ├── setup-hadoop-direct.sh   # ★ Single-node Hadoop direct install
-│   ├── demo.sh                  # ★ One-click demo (inject fault → repair)
+│   ├── inject-fault.sh          # ★ One-click demo (inject fault → repair)
 │   ├── healthcheck.sh           # Hadoop cluster health check (Docker/direct)
 │   ├── build-llama.sh           # Compile llama.cpp with ROCm
 │   ├── build-frontend.sh        # Build React frontend (production)
 │   ├── download-tarballs.sh     # Download Hadoop tarballs
 │   ├── export-cluster.sh        # Export Docker image + volumes (for remote HA)
 │   └── bootstrap.sh             # Start llama-server (model download)
+├── main.py                      # Entry point: FastAPI + Orchestrator
 ├── src/                         # Python backend
-│   ├── main.py                  # Entry point: FastAPI + Orchestrator
 │   ├── config.py                # Configuration (env var driven)
 │   ├── orchestrator.py          # Master scheduler (rule-based)
 │   ├── agent.py                 # ReAct agent (tool-calling LLM)
